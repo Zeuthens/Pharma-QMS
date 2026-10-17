@@ -1,6 +1,10 @@
 {
   "Zeuthens": {
-    "full_name": "TODO: confirm full legal name for electronic signatures (candidate: Ulrik Ledgaard Zeuthen)",
-    "job_title": "TODO: confirm job title (candidate: QMS Owner)"
+    "full_name": "Ulrik Ledgaard Zeuthen",
+    "job_title": "QMS Owner"
+  },
+  "john_doe": {
+    "full_name": "John Doe (PLACEHOLDER: replace with a real second signer before any signature)",
+    "job_title": "Quality Assurance Lead (placeholder)"
   }
 }

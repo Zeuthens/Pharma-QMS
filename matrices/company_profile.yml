@@ -12,7 +12,7 @@ company:
     city: "TODO: add city"
     country: "Denmark"  # TODO: confirm
   qms_owner:
-    full_name: "TODO: confirm full legal name for electronic signatures (candidate: Ulrik Ledgaard Zeuthen)"
+    full_name: "Ulrik Ledgaard Zeuthen"
     github_login: "Zeuthens"
   operating_model: "small team, remote"  # TODO: confirm
   regulatory_role: "Software supplier and licensor of a non-device software product with AI features used by customers in a GxP-regulated pharmaceutical context"

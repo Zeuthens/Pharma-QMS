@@ -24,7 +24,7 @@ Applies to the Zeuthen QMS (Pharma-QMS) for non-device software products with AI
 
 ## 3. Organization and Context
 - Legal Entity: Zeuthen (TODO: confirm legal form, registered address, and CVR number in `matrices/company_profile.yml`)
-- QMS Owner: GitHub `Zeuthens` (TODO: confirm full legal name; candidate: Ulrik Ledgaard Zeuthen)
+- QMS Owner: GitHub `Zeuthens`, Ulrik Ledgaard Zeuthen
 - Operating Model: Small team, remote (TODO: confirm)
 - Regulatory Role: Software supplier / licensor of a non-device software product used by customers in a GxP-regulated pharmaceutical context
 - Product Type: Non-device software with AI features (IMPD automation); not a medical device
