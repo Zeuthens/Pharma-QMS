@@ -3,10 +3,11 @@ name: 2.7 QMS Release Signature Flow
 run-name: 2.7 QMS Release Signature Flow
 
 on:
-  # Pharma-QMS: the automatic `release: published` trigger is removed because this
-  # workflow needs SIGNATURE_UI_BASE_URL (signing endpoint), which is not configured
-  # yet (adoption blocker). Run it via workflow_dispatch once a release-signature
-  # method is approved; issue_comment only reconciles posted attestations.
+  # Pharma-QMS: no hosted signing endpoint. Signers sign the release planning issue
+  # with the git-native workflow 2.5; issue_comment reconciles the posted attestations.
+  # 2.3 also dispatches this workflow after publishing a QMS release.
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       release_tag:
@@ -16,6 +17,7 @@ on:
     types: [created]
 
 permissions:
+  actions: read
   contents: write
   issues: write
   pull-requests: read
@@ -246,7 +248,11 @@ jobs:
               issue_number: prNumber,
               per_page: 100,
             });
+            // Pharma-QMS: only the QMS-App-posted 2.1 request defines the release signer slots.
+            const isQmsAppComment = (c) => String(c.user?.login || '').toLowerCase() === 'zeuthen-pharma-qms-bot[bot]' &&
+              (!c.performed_via_github_app || String(c.performed_via_github_app.slug || '').toLowerCase() === 'zeuthen-pharma-qms-bot');
             const requestComments = comments
+              .filter(isQmsAppComment)
               .filter((comment) => String(comment.body || '').includes('<!-- SIGNATURE_REQUEST_CONTEXT_V1'))
               .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0));
             const latest = requestComments[requestComments.length - 1];
@@ -286,7 +292,6 @@ jobs:
           SIGNERS_JSON: ${{ steps.signers.outputs.signers_json }}
           ROLES_CSV: ${{ steps.signers.outputs.roles_csv }}
           ELIGIBLE_SIGNERS_CSV: ${{ steps.signers.outputs.eligible_signers_csv }}
-          SIGNATURE_UI_BASE_URL: ${{ vars.SIGNATURE_UI_BASE_URL }}
         with:
           github-token: ${{ steps.app_token.outputs.token }}
           script: |
@@ -311,21 +316,12 @@ jobs:
               core.setFailed('A valid release planning issue number is required.');
               return;
             }
-            const signingBaseUrl = String(process.env.SIGNATURE_UI_BASE_URL || '').trim().replace(/\/+$/g, '');
-            if (!signingBaseUrl) {
-              core.setFailed('SIGNATURE_UI_BASE_URL is not configured.');
-              return;
-            }
+            // Pharma-QMS: no hosted signing endpoint. Each signer runs the git-native
+            // workflow 2.5 on this issue; 2.5 re-verifies the release package hash and
+            // the signer slot against the release decision PR before signing.
+            const gitNativeWorkflowUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/workflows/2.5_signature_git_native_fallback.yml`;
             const signers = JSON.parse(String(process.env.SIGNERS_JSON || '[]'));
-            const buildLink = (slot) => {
-              const params = new URLSearchParams({
-                repo: `${context.repo.owner}/${context.repo.repo}`,
-                pr: String(issueNumber),
-                signer: String(slot.signer || '').toLowerCase(),
-                role: String(slot.role || ''),
-              });
-              return `${signingBaseUrl}/sign?${params.toString()}`;
-            };
+            const buildLink = () => gitNativeWorkflowUrl;
             const requestContext = {
               version: 1,
               hash: String(process.env.TARGET_HASH || '').trim(),
@@ -426,9 +422,9 @@ jobs:
               `- Release decision PR: #${String(process.env.RELEASE_PR || '').trim()}.`,
               '',
               'How to sign:',
-              '1. Open the link next to your GitHub username below.',
-              '2. Sign in with that same GitHub account.',
-              '3. Confirm with your QMS PIN.',
+              '1. Open the link next to your GitHub username below (workflow 2.5 Manual Signature Attestation Fallback).',
+              `2. Click "Run workflow", enter pr_number ${issueNumber} (this issue) and type your full legal name as your signature assertion.`,
+              '3. Run the workflow while signed in with that same GitHub account; it posts the signature attestation on this issue.',
               '',
               ...links,
               '',
@@ -455,7 +451,9 @@ jobs:
               issue_number: issueNumber,
               per_page: 100,
             });
-            const alreadyCompleted = comments.some((comment) => String(comment.body || '').includes('<!-- qms-release-signature-complete -->'));
+            const isQmsAppComment = (c) => String(c.user?.login || '').toLowerCase() === 'zeuthen-pharma-qms-bot[bot]' &&
+              (!c.performed_via_github_app || String(c.performed_via_github_app.slug || '').toLowerCase() === 'zeuthen-pharma-qms-bot');
+            const alreadyCompleted = comments.some((comment) => isQmsAppComment(comment) && String(comment.body || '').includes('<!-- qms-release-signature-complete -->'));
             if (alreadyCompleted) {
               await applyState(ACTIVE_LABELS.complete.name, [
                 ACTIVE_LABELS.outstanding.name,
@@ -465,7 +463,7 @@ jobs:
               return;
             }
             const existing = comments
-              .filter((comment) => String(comment.body || '').includes('<!-- qms-release-signature-request -->'))
+              .filter((comment) => isQmsAppComment(comment) && String(comment.body || '').includes('<!-- qms-release-signature-request -->'))
               .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0))
               .pop();
 
@@ -531,13 +529,20 @@ jobs:
       - name: Install render dependencies
         run: python -m pip install --quiet fpdf2 pyyaml
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
       - name: Aggregate release signature evidence
         id: aggregate
         uses: actions/github-script@v8
+        env:
+          ACTIONS_READ_TOKEN: ${{ github.token }}
         with:
           github-token: ${{ steps.app_token.outputs.token }}
           script: |
             const fs = require('fs');
+            const evidence = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/signature-evidence.js`);
+            const actionsClient = getOctokit(process.env.ACTIONS_READ_TOKEN);
             const issue = context.payload.issue;
             const issueNumber = Number(issue?.number || 0);
             if (!issueNumber) {
@@ -563,8 +568,11 @@ jobs:
               issue_number: issueNumber,
               per_page: 100,
             });
+            // Pharma-QMS: only QMS-App-posted requests and attestations are evidence, and each
+            // attestation's 2.5 run and Sigstore signature are verified before aggregation.
+            const isBotComment = evidence.isQmsAppComment;
             const requestComment = comments
-              .filter((comment) => String(comment.body || '').includes('<!-- qms-release-signature-request -->'))
+              .filter((comment) => isBotComment(comment) && String(comment.body || '').includes('<!-- qms-release-signature-request -->'))
               .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0))
               .pop();
             if (!requestComment) {
@@ -586,13 +594,14 @@ jobs:
             const requiredSignatures = Number.parseInt(String(requestContext.required_signatures || expectedSigners.length || 1), 10) || 1;
 
             const bySigner = new Map();
-            for (const comment of comments) {
+            const chronological = [...comments].sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0));
+            for (const comment of chronological.reverse()) {
               const body = String(comment.body || '');
               const isAttestation = body.includes('<!-- SIGNATURE_ATTESTATION_V1 -->') ||
                 body.includes('<!-- PART11_ATTESTATION_V1 -->') ||
                 body.includes('<!-- signature-native-attestation -->') ||
                 body.includes('<!-- part11-native-attestation -->');
-              if (!isAttestation) continue;
+              if (!isAttestation || !isBotComment(comment)) continue;
               const payload = parseJsonBlock(body);
               if (!payload) continue;
 
@@ -606,6 +615,28 @@ jobs:
               if (targetHash !== expectedHash) continue;
               if (meaning !== expectedMeaning) continue;
               if (!signerLogin) continue;
+              if (expectedSigners.length > 0 && !expectedSigners.includes(signerLogin)) continue;
+              if (bySigner.has(signerLogin)) continue;
+
+              const verified = await evidence.verifySignatureEvidence({
+                actionsClient,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                repositoryFull: String(process.env.GITHUB_REPOSITORY || `${context.repo.owner}/${context.repo.repo}`),
+                defaultBranch: String(context.payload.repository?.default_branch || 'main'),
+                comment,
+                attestation: payload,
+                signer: signerLogin,
+                recordNumber: issueNumber,
+                prefix: `signer_attestation_${signerLogin}`,
+                exec,
+                fs,
+                core,
+              });
+              if (!verified.ok) {
+                core.warning(`Attestation ${comment.html_url} on issue #${issueNumber} rejected: ${verified.reason}`);
+                continue;
+              }
 
               bySigner.set(signerLogin, {
                 user_id: String(payload.user_id || payload.actor_login || '').trim(),
@@ -693,6 +724,7 @@ jobs:
           CERT_PDF: Electronic_Signature_Certificate_${{ steps.aggregate.outputs.release_tag }}.pdf
         run: |
           python3 <<'PY'
+          import glob
           import json
           import os
           import re
@@ -713,6 +745,8 @@ jobs:
           cert_pdf = os.environ["CERT_PDF"]
 
           attestation = json.loads(Path("signed_attestation.json").read_text(encoding="utf-8"))
+          # Verified per-signer manifests, Sigstore signatures and certificates (2.5).
+          signer_files = sorted(glob.glob("signer_attestation_*"))
           notes = "\n".join([
             "# Immutable QMS Release Signature Record",
             "",
@@ -730,6 +764,7 @@ jobs:
             "Assets:",
             f"- `{cert_pdf}`",
             "- `signed_attestation.json`",
+            *[f"- `{name}`" for name in signer_files],
           ]) + "\n"
           Path("release_signature_notes.md").write_text(notes, encoding="utf-8")
 
@@ -769,6 +804,7 @@ jobs:
             "--draft",
             cert_pdf,
             "signed_attestation.json",
+            *signer_files,
           ])
           run(["gh", "release", "edit", signature_tag, "--repo", repository, "--draft=false"])
 

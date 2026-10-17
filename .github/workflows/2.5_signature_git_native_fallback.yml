@@ -1,12 +1,13 @@
 # Modified by Zeuthen, 2026-10-17
 name: 2.5 Manual Signature Attestation Fallback
-run-name: 2.5 Manual Signature Fallback
+# Pharma-QMS: the record number in run-name lets 3.2 / 2.7 bind a run to its record.
+run-name: 2.5 Manual Signature Fallback #${{ inputs.pr_number }}
 
 on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: "Pull request number to sign"
+        description: "Number of the merged pull request, training issue, or QMS release planning issue to sign"
         required: true
       signer_full_name:
         description: "Type your full legal name exactly as your signature assertion"
@@ -23,7 +24,14 @@ env:
 
 jobs:
   sign_and_attest:
-    if: github.event_name == 'workflow_dispatch'
+    # Pharma-QMS: refuse dispatches from other branches. This guards against stale or
+    # accidental refs only (a branch can edit this file); forged runs are rejected by
+    # the 3.2 / 2.7 reconcilers, which verify the run and the Sigstore certificate
+    # identity (2.5 on the default branch). Keep QMS_BOT_APP_* in an environment
+    # restricted to the default branch (README "Adoption status").
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     steps:
       - name: Create GitHub App token for signature processing
@@ -35,21 +43,71 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: |
             ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-issues: write
+          permission-pull-requests: read
+
+      # Pharma-QMS: signer policy data and the shared signature helpers are read from the
+      # default branch. Training-issue signers are checked against the training matrix;
+      # QMS-release signers against the signer registry (see docs/architecture section 11).
+      - name: Checkout signer policy from default branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: |
+            matrices
+            .github/scripts
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Export training matrix signer policy
+        run: |
+          python -m pip install --quiet pyyaml
+          python <<'PY'
+          import json
+          from pathlib import Path
+
+          import yaml
+
+          matrix = yaml.safe_load(Path("matrices/training_matrix.yml").read_text(encoding="utf-8")) or {}
+          users = matrix.get("users") or {}
+          roles = matrix.get("roles") or {}
+          policy = {
+            "training_users": {
+              str(login): {
+                "full_name": str((profile or {}).get("full_name", "")).strip(),
+                "job_title": str((profile or {}).get("job_title", "")).strip(),
+              }
+              for login, profile in users.items()
+            },
+            "training_roles": {
+              str(role): [str(user) for user in ((role_def or {}).get("users") or [])]
+              for role, role_def in roles.items()
+            },
+          }
+          Path("signer_policy.json").write_text(json.dumps(policy, indent=2) + "\n", encoding="utf-8")
+          PY
 
       - name: Resolve signature inputs
         id: siginput
         uses: actions/github-script@v8
+        env:
+          INPUT_PR_NUMBER: ${{ github.event.inputs.pr_number }}
+          INPUT_SIGNER_FULL_NAME: ${{ github.event.inputs.signer_full_name }}
         with:
           github-token: ${{ steps.app_token.outputs.token }}
           script: |
-            const prNumber = Number.parseInt(`${{ github.event.inputs.pr_number }}`, 10);
-            const signerFullName = `${{ github.event.inputs.signer_full_name }}`.trim();
+            const prNumber = Number.parseInt(String(process.env.INPUT_PR_NUMBER || '').trim(), 10);
+            const signerFullName = String(process.env.INPUT_SIGNER_FULL_NAME || '').trim();
             const meaning = '';
             const signerRole = '';
             const authMethod = 'GitHub App workflow dispatch';
             const mfaAssertion = '';
             if (!Number.isInteger(prNumber) || prNumber < 1) {
-              core.setFailed('pr_number must resolve to a positive integer.');
+              core.setFailed('pr_number must resolve to a positive integer (PR or issue number).');
               return;
             }
             if (!signerFullName) {
@@ -64,7 +122,7 @@ jobs:
             core.setOutput('mfa_assertion', mfaAssertion || '');
             core.setOutput('signer_full_name', signerFullName || '');
 
-      - name: Resolve PR and target hash
+      - name: Resolve PR or issue and target hash
         id: pr
         uses: actions/github-script@v8
         with:
@@ -75,6 +133,283 @@ jobs:
             const inputSignerRole = (process.env.INPUT_SIGNER_ROLE || '').trim();
 
             const prNumber = Number.parseInt(process.env.PR_NUMBER, 10);
+
+            // Pharma-QMS: the same git-native ceremony signs training issues (3.2) and
+            // QMS release planning issues (2.7). The signer must be named in the latest
+            // bot-posted signature request on the issue, and eligibility and the target
+            // hash are re-verified here from authoritative sources before signing.
+            const record = (await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            })).data;
+            if (!record.pull_request) {
+              await resolveIssueSignature(record);
+              return;
+            }
+
+            async function resolveIssueSignature(issue) {
+              const fs = require('fs');
+              const issueNumber = Number(issue.number);
+              const actor = (context.actor || '').toLowerCase();
+              const repoFull = `${context.repo.owner}/${context.repo.repo}`;
+              const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex');
+              const { isQmsAppComment: isBotComment } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/signature-evidence.js`);
+              const parseRequestContext = (body) => {
+                const match = String(body || '').match(/<!--\s*SIGNATURE_REQUEST_CONTEXT_V1\s*([\s\S]*?)-->/i);
+                if (!match || !match[1]) return null;
+                try { return JSON.parse(match[1].trim()); } catch { return null; }
+              };
+              const latestBotRequest = async (number) => {
+                const all = await github.paginate(github.rest.issues.listComments, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: number,
+                  per_page: 100,
+                });
+                const requests = all
+                  .filter((c) => isBotComment(c) && String(c.body || '').includes('<!-- signature-native-signature-request -->') && String(c.body || '').includes('SIGNATURE_REQUEST_CONTEXT_V1'))
+                  .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0));
+                return { comments: all, request: requests[requests.length - 1] || null };
+              };
+              const readJson = (path) => {
+                try { return JSON.parse(fs.readFileSync(path, 'utf8')); } catch (error) {
+                  core.warning(`Could not read ${path}: ${error.message}`);
+                  return {};
+                }
+              };
+
+              const { comments: issueComments, request } = await latestBotRequest(issueNumber);
+              if (!request) {
+                core.setFailed(`No signature request posted by the QMS bot found on issue #${issueNumber}.`);
+                return;
+              }
+              const requestContext = parseRequestContext(request.body);
+              if (!requestContext || String(requestContext.record_type || '').trim().toLowerCase() !== 'issue') {
+                core.setFailed(`Signature request on issue #${issueNumber} has no issue request context.`);
+                return;
+              }
+              const hashScope = String(requestContext.hash_scope || '').trim();
+              const expectedHash = String(requestContext.hash || '').trim().toLowerCase();
+              const meaning = String(requestContext.meaning || '').trim();
+              const slots = Array.isArray(requestContext.signers) ? requestContext.signers : [];
+              const eligible = slots.map((s) => String(s.signer || '').trim().toLowerCase()).filter(Boolean);
+              const slot = slots.find((s) => String(s.signer || '').trim().toLowerCase() === actor);
+              if (!expectedHash || !meaning) {
+                core.setFailed(`Signature request on issue #${issueNumber} is missing its target hash or meaning.`);
+                return;
+              }
+              if (!slot) {
+                core.setFailed(
+                  `@${context.actor} is not an eligible signer for issue #${issueNumber}. Eligible signers: ${eligible.map((x) => '@' + x).join(', ') || 'none'}`
+                );
+                return;
+              }
+              const signerRole = String(slot.role || '').trim();
+              if (!signerRole) {
+                core.setFailed(`Could not resolve signer role for @${context.actor} on issue #${issueNumber}.`);
+                return;
+              }
+
+              const registry = readJson('matrices/signer_registry.json');
+              const policy = readJson('signer_policy.json');
+              const inRegistry = Object.keys(registry).some((login) => login.toLowerCase() === actor);
+              let targetCommit = '';
+
+              if (hashScope === 'training_issue_content') {
+                const labels = (issue.labels || []).map((l) => String(l.name || '').toLowerCase());
+                if (!labels.includes('training-diff') || !String(request.body || '').includes('<!-- training-signature-request -->')) {
+                  core.setFailed(`Issue #${issueNumber} is not a training-diff issue with a training signature request.`);
+                  return;
+                }
+                if (String(issue.state || '').toLowerCase() !== 'open') {
+                  core.setFailed(`Training issue #${issueNumber} is not open.`);
+                  return;
+                }
+                if (meaning !== 'Completed QMS Training Review') {
+                  core.setFailed(`Unexpected training signature meaning '${meaning}' on issue #${issueNumber}.`);
+                  return;
+                }
+                if (issueComments.some((c) => isBotComment(c) && String(c.body || '').includes('<!-- training-signature-complete -->'))) {
+                  core.setFailed(`Training issue #${issueNumber} is already signed and completed.`);
+                  return;
+                }
+                const body = String(issue.body || '');
+                const sectionMatch = body.match(/### (?:Controlled Document Checklist|SOP Delta Checklist)([\s\S]*?)(?:\n###\s|\n##\s|$)/i);
+                const section = sectionMatch ? (sectionMatch[1] || '') : '';
+                const totalTasks = (section.match(/^- \[(?: |x|X)\] .+$/gm) || []).length;
+                const openTasks = (section.match(/^- \[ \] .+$/gm) || []).length;
+                if (totalTasks === 0 || openTasks > 0) {
+                  core.setFailed(`Training issue #${issueNumber} checklist is not complete (${openTasks}/${totalTasks} unchecked).`);
+                  return;
+                }
+                // Same target hash as 3.2: binds the signature to the issue content signed.
+                const currentHash = sha256(`${repoFull}:training_issue:${issueNumber}:${sha256(body)}`);
+                if (currentHash !== expectedHash) {
+                  core.setFailed(
+                    `Training issue #${issueNumber} changed after the signature request was posted (hash ${currentHash} != ${expectedHash}). Wait for workflow 3.2 to refresh the request, then sign again.`
+                  );
+                  return;
+                }
+                const markerMatch = body.match(/training-release:user=([A-Za-z0-9-]+)/i)
+                  || body.match(/training-diff-consolidated:user=([A-Za-z0-9-]+)/i);
+                const markerUser = markerMatch ? markerMatch[1].toLowerCase() : '';
+                const trainee = ((issue.assignees || [])[0]?.login || '').toLowerCase() || markerUser;
+                if (!trainee || actor !== trainee || (markerUser && markerUser !== actor)) {
+                  core.setFailed(`Only the trainee named on training issue #${issueNumber} (@${trainee || 'unknown'}) can sign it.`);
+                  return;
+                }
+                const trainingUsers = policy.training_users || {};
+                const trainingRoles = policy.training_roles || {};
+                if (!Object.keys(trainingUsers).some((login) => login.toLowerCase() === actor)) {
+                  core.setFailed(`@${context.actor} is not listed in matrices/training_matrix.yml.`);
+                  return;
+                }
+                const rolesLine = body.match(/- Roles in scope:\s+`([^`]+)`/i);
+                const rolesInScope = rolesLine
+                  ? rolesLine[1].split(',').map((r) => r.trim()).filter((r) => r && r.toLowerCase() !== 'none')
+                  : [];
+                const unassignedRoles = rolesInScope.filter(
+                  (role) => !(trainingRoles[role] || []).some((user) => String(user).toLowerCase() === actor)
+                );
+                if (rolesInScope.length === 0 || unassignedRoles.length > 0) {
+                  core.setFailed(
+                    `@${context.actor} is not assigned in matrices/training_matrix.yml to the roles in scope of issue #${issueNumber}: ${unassignedRoles.join(', ') || '(none listed)'}.`
+                  );
+                  return;
+                }
+              } else if (hashScope === 'qms_release_package') {
+                if (!String(request.body || '').includes('<!-- qms-release-signature-request -->')) {
+                  core.setFailed(`Issue #${issueNumber} has no QMS release signature request.`);
+                  return;
+                }
+                if (meaning !== 'Approved Published QMS Release') {
+                  core.setFailed(`Unexpected release signature meaning '${meaning}' on issue #${issueNumber}.`);
+                  return;
+                }
+                if (issueComments.some((c) => isBotComment(c) && String(c.body || '').includes('<!-- qms-release-signature-complete -->'))) {
+                  core.setFailed(`Release signature on issue #${issueNumber} is already completed.`);
+                  return;
+                }
+                if (!inRegistry) {
+                  core.setFailed(`@${context.actor} is not listed in matrices/signer_registry.json.`);
+                  return;
+                }
+                const releaseTag = String(requestContext.release_tag || '').trim();
+                if (!/^QMS-[0-9]{4}-[0-9]{2}-[0-9]{2}-R[0-9]{3}$/.test(releaseTag)) {
+                  core.setFailed(`Release tag '${releaseTag}' in the signature request is not a QMS release tag.`);
+                  return;
+                }
+                const release = (await github.rest.repos.getReleaseByTag({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  tag: releaseTag,
+                })).data;
+                if (Number(release.id) !== Number(requestContext.release_id)) {
+                  core.setFailed(`Release ${releaseTag} id ${release.id} does not match the signature request (${requestContext.release_id}).`);
+                  return;
+                }
+                const assetSha = async (name) => {
+                  const asset = (release.assets || []).find((a) => String(a.name || '') === name);
+                  if (!asset) return '';
+                  const res = await github.rest.repos.getReleaseAsset({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    asset_id: asset.id,
+                    headers: { accept: 'application/octet-stream' },
+                  });
+                  const data = Buffer.from(res.data);
+                  return { sha: sha256(data), data };
+                };
+                const manifestAsset = await assetSha('qms_release_manifest.json');
+                const snapshotAsset = await assetSha('qms_release_snapshot.tgz');
+                if (!manifestAsset || !snapshotAsset) {
+                  core.setFailed(`Release ${releaseTag} is missing qms_release_manifest.json or qms_release_snapshot.tgz.`);
+                  return;
+                }
+                const releaseManifest = JSON.parse(manifestAsset.data.toString('utf8'));
+                if (Number(releaseManifest.release_planning_issue) !== issueNumber) {
+                  core.setFailed(`Release ${releaseTag} manifest names planning issue #${releaseManifest.release_planning_issue}, not #${issueNumber}.`);
+                  return;
+                }
+                const sourceSha = String(releaseManifest.source_sha || '').trim();
+                // Same target material and canonical JSON as 2.7 (sorted keys, no spaces).
+                const material = {
+                  attestation_scope: 'qms_release_package',
+                  qms_release_manifest_sha256: manifestAsset.sha,
+                  qms_release_snapshot_sha256: snapshotAsset.sha,
+                  release_id: Number(release.id),
+                  release_tag: releaseTag,
+                  release_url: String(release.html_url || ''),
+                  schema_version: 1,
+                  source_repository: String(process.env.GITHUB_REPOSITORY || repoFull),
+                  source_sha: sourceSha,
+                };
+                const currentHash = sha256(JSON.stringify(material));
+                if (
+                  currentHash !== expectedHash ||
+                  manifestAsset.sha !== String(requestContext.qms_release_manifest_sha256 || '').trim() ||
+                  snapshotAsset.sha !== String(requestContext.qms_release_snapshot_sha256 || '').trim() ||
+                  sourceSha !== String(requestContext.source_target_commit || '').trim()
+                ) {
+                  core.setFailed(`Published release package ${releaseTag} no longer matches the signature request (hash ${currentHash} != ${expectedHash}).`);
+                  return;
+                }
+                // Signer slots must match the signed release decision PR request (2.1),
+                // which already encodes the role and author/reviewer signing policy.
+                const releasePrNumber = Number.parseInt(String(requestContext.release_decision_pull_request || '').trim(), 10);
+                if (!Number.isInteger(releasePrNumber) || releasePrNumber < 1) {
+                  core.setFailed(`Signature request on issue #${issueNumber} has no release decision PR.`);
+                  return;
+                }
+                const releasePr = (await github.rest.pulls.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: releasePrNumber,
+                })).data;
+                if (!releasePr.merged) {
+                  core.setFailed(`Release decision PR #${releasePrNumber} is not merged.`);
+                  return;
+                }
+                const prRequestContext = parseRequestContext((await latestBotRequest(releasePrNumber)).request?.body);
+                const prSlots = Array.isArray(prRequestContext?.signers) ? prRequestContext.signers : [];
+                const prSlotMatches = prSlots.some(
+                  (s) => String(s.signer || '').trim().toLowerCase() === actor &&
+                    String(s.role || '').trim().toLowerCase() === signerRole.toLowerCase()
+                );
+                if (!prSlotMatches) {
+                  core.setFailed(`@${context.actor} (${signerRole}) is not a designated signer on release decision PR #${releasePrNumber}.`);
+                  return;
+                }
+                if (prSlots.length !== slots.length) {
+                  core.setFailed(`Signer slots on issue #${issueNumber} do not match release decision PR #${releasePrNumber}.`);
+                  return;
+                }
+                targetCommit = sourceSha;
+              } else {
+                core.setFailed(`Unsupported signature scope '${hashScope}' on issue #${issueNumber}.`);
+                return;
+              }
+
+              core.setOutput('record_type', 'issue');
+              core.setOutput('hash_scope', hashScope);
+              core.setOutput('pr_number', String(issueNumber));
+              core.setOutput('pr_url', String(issue.html_url || ''));
+              core.setOutput('pr_title', String(issue.title || ''));
+              core.setOutput('target_commit', targetCommit);
+              core.setOutput('target_hash', expectedHash);
+              core.setOutput('repo_full', repoFull);
+              core.setOutput('actor_login', context.actor);
+              core.setOutput('actor_id', String(context.payload.sender?.id || '0'));
+              core.setOutput('allowed_signers_csv', eligible.join(','));
+              core.setOutput('meaning_of_signature', meaning);
+              core.setOutput('signer_role', signerRole);
+              core.setOutput('auth_method', process.env.INPUT_AUTH_METHOD || 'GitHub App workflow dispatch');
+              core.setOutput('request_comment_id', String(request.id || ''));
+              core.setOutput('request_comment_url', String(request.html_url || ''));
+              core.setOutput('request_roles_csv', slots.map((s) => String(s.role || '').trim()).filter(Boolean).join(';'));
+            }
+
             const res = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -208,10 +543,12 @@ jobs:
               issue_number: prNumber,
               per_page: 100,
             });
+            // Pharma-QMS: only signature requests posted by the QMS GitHub App count.
+            const { isQmsAppComment } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/signature-evidence.js`);
             const requestComments = comments
               .filter((c) => {
                 const body = c.body || '';
-                return body.includes('<!-- signature-native-signature-request -->') || body.includes('<!-- part11-native-signature-request -->');
+                return isQmsAppComment(c) && (body.includes('<!-- signature-native-signature-request -->') || body.includes('<!-- part11-native-signature-request -->'));
               })
               .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
             if (requestComments.length === 0) {
@@ -267,6 +604,8 @@ jobs:
             const repoFull = `${context.repo.owner}/${context.repo.repo}`;
             const targetHash = crypto.createHash('sha256').update(`${repoFull}:${targetCommit}`).digest('hex');
 
+            core.setOutput('record_type', 'pull_request');
+            core.setOutput('hash_scope', 'pr_merge_state');
             core.setOutput('pr_number', String(pr.number));
             core.setOutput('pr_url', pr.html_url);
             core.setOutput('pr_title', pr.title || '');
@@ -291,6 +630,8 @@ jobs:
       - name: Build attestation manifest
         uses: actions/github-script@v8
         env:
+          RECORD_TYPE: ${{ steps.pr.outputs.record_type }}
+          HASH_SCOPE: ${{ steps.pr.outputs.hash_scope }}
           PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
           PR_URL: ${{ steps.pr.outputs.pr_url }}
           PR_TITLE: ${{ steps.pr.outputs.pr_title }}
@@ -326,7 +667,16 @@ jobs:
               }
             }
             const registryKey = (process.env.ACTOR_LOGIN || '').toLowerCase();
-            const profile = Object.entries(registry).find(([login]) => login.toLowerCase() === registryKey)?.[1] || {};
+            const isIssueRecord = process.env.RECORD_TYPE === 'issue';
+            // Pharma-QMS: trainees need not be in the signer registry; their printed
+            // name and title come from the training matrix (exported by an earlier step).
+            let trainingUsers = {};
+            if (isIssueRecord && process.env.HASH_SCOPE === 'training_issue_content' && fs.existsSync('signer_policy.json')) {
+              trainingUsers = JSON.parse(fs.readFileSync('signer_policy.json', 'utf8')).training_users || {};
+            }
+            const profile = Object.entries(registry).find(([login]) => login.toLowerCase() === registryKey)?.[1]
+              || Object.entries(trainingUsers).find(([login]) => login.toLowerCase() === registryKey)?.[1]
+              || {};
             const assertedName = String(process.env.SIGNER_FULL_NAME_ASSERTION || '').trim();
             const expectedName = String(profile.full_name || '').trim();
             const normalizeName = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
@@ -336,16 +686,30 @@ jobs:
               );
               return;
             }
+            if (isIssueRecord && !expectedName) {
+              core.setFailed(`No registered full name found for @${process.env.ACTOR_LOGIN}; issue signatures require a signer registry or training matrix entry.`);
+              return;
+            }
             const signerFullName = assertedName || expectedName || process.env.ACTOR_LOGIN;
             const signerJobTitle = String(profile.job_title || '').trim() || process.env.SIGNER_ROLE;
 
             const payload = {
               schema_version: 1,
-              attestation_type: 'part11_git_native_pr_signature',
+              attestation_type: isIssueRecord ? 'part11_git_native_issue_signature' : 'part11_git_native_pr_signature',
               repository: process.env.REPO_FULL,
-              pr_number: Number(process.env.PR_NUMBER),
-              pr_url: process.env.PR_URL,
-              pr_title: process.env.PR_TITLE,
+              ...(isIssueRecord
+                ? {
+                    record_type: 'issue',
+                    record_number: Number(process.env.PR_NUMBER),
+                    record_url: process.env.PR_URL,
+                    record_title: process.env.PR_TITLE,
+                    target_hash_scope: process.env.HASH_SCOPE,
+                  }
+                : {
+                    pr_number: Number(process.env.PR_NUMBER),
+                    pr_url: process.env.PR_URL,
+                    pr_title: process.env.PR_TITLE,
+                  }),
               target_commit: process.env.TARGET_COMMIT,
               target_hash: process.env.TARGET_HASH,
               meaning_of_signature: process.env.MEANING,
@@ -404,7 +768,7 @@ jobs:
           if-no-files-found: error
           retention-days: 5
 
-      - name: Post attestation comment to PR
+      - name: Post attestation comment to PR or issue
         uses: actions/github-script@v8
         env:
           PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
@@ -415,9 +779,19 @@ jobs:
           github-token: ${{ steps.app_token.outputs.token }}
           script: |
             const fs = require('fs');
+            const crypto = require('crypto');
             const prNumber = Number(process.env.PR_NUMBER);
             const targetHash = process.env.TARGET_HASH;
-            const attestation = JSON.parse(fs.readFileSync('signed_attestation.json', 'utf8'));
+            const signedBytes = fs.readFileSync('signed_attestation.json');
+            const attestation = JSON.parse(signedBytes.toString('utf8'));
+            // Pharma-QMS: carry the cosign keyless signature and certificate in the comment
+            // so 3.2 / 2.7 can verify them and attach them to the evidence release.
+            const sigstoreBlock = {
+              signed_file: 'signed_attestation.json',
+              signed_file_sha256: crypto.createHash('sha256').update(signedBytes).digest('hex'),
+              signature: fs.readFileSync('signed_attestation.sig', 'utf8').trim(),
+              certificate: fs.readFileSync('signed_attestation.pem', 'utf8').trim(),
+            };
             const artifactLine = process.env.UPLOAD_ATTESTATION_ARTIFACT === 'true'
               ? `Run artifact: \`${process.env.ARTIFACT_NAME}\``
               : 'Run artifact: disabled (`UPLOAD_ATTESTATION_ARTIFACT=false`)';
@@ -438,6 +812,9 @@ jobs:
               '```json',
               JSON.stringify(attestation, null, 2),
               '```',
+              '<!-- SIGSTORE_SIGNATURE_V1',
+              JSON.stringify(sigstoreBlock),
+              '-->',
             ].join('\n');
 
             await github.rest.issues.createComment({

@@ -10,6 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: write
   issues: write
   pull-requests: write
@@ -37,8 +38,6 @@ jobs:
 
       - name: Post signature request when checklist is complete
         uses: actions/github-script@v8
-        env:
-          SIGNATURE_UI_BASE_URL: ${{ vars.SIGNATURE_UI_BASE_URL }}
         with:
           github-token: ${{ steps.app_token.outputs.token }}
           script: |
@@ -91,10 +90,15 @@ jobs:
               issue_number: issue.number,
               per_page: 100,
             });
-            const requestComments = comments
+            // Pharma-QMS: only requests and attestations posted by the QMS GitHub App count
+            // (not github-actions[bot], which any branch workflow could post as).
+            const isQmsAppComment = (c) => String(c.user?.login || '').toLowerCase() === 'zeuthen-pharma-qms-bot[bot]' &&
+              (!c.performed_via_github_app || String(c.performed_via_github_app.slug || '').toLowerCase() === 'zeuthen-pharma-qms-bot');
+            const botComments = comments.filter(isQmsAppComment);
+            const requestComments = botComments
               .filter((c) => String(c.body || '').includes('<!-- training-signature-request -->'))
               .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0));
-            const hasAttestation = comments.some((c) => {
+            const hasAttestation = botComments.some((c) => {
               const b = String(c.body || '');
               return b.includes('<!-- SIGNATURE_ATTESTATION_V1 -->') ||
                 b.includes('<!-- PART11_ATTESTATION_V1 -->') ||
@@ -192,16 +196,10 @@ jobs:
               return;
             }
 
-            const signingBaseUrl = (process.env.SIGNATURE_UI_BASE_URL || '').trim().replace(/\/+$/g, '');
-            if (!signingBaseUrl) {
-              // Pharma-QMS: no signing endpoint is configured yet (adoption blocker).
-              // Exit cleanly with a notice instead of failing on every issue event.
-              core.notice(
-                `SIGNATURE_UI_BASE_URL is not configured; no training signature request was posted for issue #${issue.number}. ` +
-                'Training signatures stay blocked until a signing endpoint or an approved fallback is configured (see README "Adoption status").'
-              );
-              return;
-            }
+            // Pharma-QMS: no hosted signing endpoint. The trainee signs with the
+            // git-native workflow 2.5 (workflow_dispatch), which re-verifies the
+            // trainee, training-matrix roles, and this target hash before signing.
+            const gitNativeWorkflowUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/workflows/2.5_signature_git_native_fallback.yml`;
 
             const repoFull = `${context.repo.owner}/${context.repo.repo}`;
             const bodyHash = crypto.createHash('sha256').update(body).digest('hex');
@@ -210,12 +208,7 @@ jobs:
             const role = 'Trained Personnel';
             const requiredSignatures = '1';
             const signatureIndex = '1';
-            const link = `${signingBaseUrl}/sign?${new URLSearchParams({
-              repo: repoFull,
-              pr: String(issue.number),
-              signer: trainee,
-              role,
-            }).toString()}`;
+            const link = gitNativeWorkflowUrl;
             const requestContext = {
               version: 1,
               hash: targetHash,
@@ -247,11 +240,11 @@ jobs:
               `- Signature meaning: ${meaning}.`,
               '',
               'How to sign:',
-              '1. Open the link next to your GitHub username below.',
-              '2. Sign in with that same GitHub account.',
-              '3. Confirm with your QMS PIN.',
+              '1. Open the link next to your GitHub username below (workflow 2.5 Manual Signature Attestation Fallback).',
+              `2. Click "Run workflow", enter pr_number ${issue.number} (this issue) and type your full legal name as your signature assertion.`,
+              '3. Run the workflow while signed in with that same GitHub account; it posts the signature attestation on this issue.',
               '',
-              `- @${trainee}: [Review and sign](${link})`,
+              `- @${trainee} (${role}): [Review and sign](${link})`,
               '',
               '<details><summary>Technical details for the QMS record</summary>',
               '<ul>',
@@ -327,11 +320,21 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
       - name: Close signed training issues and publish immutable release
         uses: actions/github-script@v8
+        env:
+          ACTIONS_READ_TOKEN: ${{ github.token }}
         with:
           github-token: ${{ steps.app_token.outputs.token }}
           script: |
+            const fs = require('fs');
+            const crypto = require('crypto');
+            const evidence = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/signature-evidence.js`);
+            const actionsClient = getOctokit(process.env.ACTIONS_READ_TOKEN);
+            const defaultBranch = String(context.payload.repository?.default_branch || 'main');
             const ACTIVE_LABELS = {
               outstanding: 'signature/outstanding',
               complete: 'signature/complete',
@@ -347,6 +350,14 @@ jobs:
             }
 
             const checklistSectionRegex = /### (?:Controlled Document Checklist|SOP Delta Checklist)([\s\S]*?)(?:\n###\s|\n##\s|$)/i;
+            // Pharma-QMS: only QMS-App-posted requests and attestations are evidence, and each
+            // attestation's 2.5 run and Sigstore signature are verified before closure.
+            const isBotComment = evidence.isQmsAppComment;
+            function parseRequestContext(text) {
+              const m = String(text || '').match(/<!--\s*SIGNATURE_REQUEST_CONTEXT_V1\s*([\s\S]*?)-->/i);
+              if (!m || !m[1]) return null;
+              try { return JSON.parse(m[1].trim()); } catch { return null; }
+            }
             const attestationMarkers = [
               '<!-- SIGNATURE_ATTESTATION_V1 -->',
               '<!-- PART11_ATTESTATION_V1 -->',
@@ -429,7 +440,7 @@ jobs:
                 per_page: 100,
               });
 
-              const alreadyCompleted = comments.some((c) => String(c.body || '').includes('<!-- training-signature-complete -->'));
+              const alreadyCompleted = comments.some((c) => isBotComment(c) && String(c.body || '').includes('<!-- training-signature-complete -->'));
               if (alreadyCompleted) { skippedCount += 1; continue; }
 
               const markerMatch = issueBody.match(/training-release:user=([A-Za-z0-9-]+)/i)
@@ -438,10 +449,28 @@ jobs:
               const assigneeUser = ((issue.assignees || [])[0]?.login || '').toLowerCase();
               const expectedSigner = assigneeUser || markerUser;
 
+              const latestRequest = comments
+                .filter((c) => isBotComment(c) && String(c.body || '').includes('<!-- training-signature-request -->'))
+                .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0))
+                .pop();
+              const requestContext = latestRequest ? parseRequestContext(latestRequest.body) : null;
+              if (!requestContext) { skippedCount += 1; continue; }
+              const expectedHash = String(requestContext.hash || '').trim().toLowerCase();
+              const expectedMeaning = String(requestContext.meaning || 'Completed QMS Training Review').trim();
+              // Refuse to close when the issue content changed after the signed request.
+              const repoFullName = `${context.repo.owner}/${context.repo.repo}`;
+              const bodySha = crypto.createHash('sha256').update(issueBody).digest('hex');
+              const currentHash = crypto.createHash('sha256').update(`${repoFullName}:training_issue:${issue.number}:${bodySha}`).digest('hex');
+              if (currentHash !== expectedHash) {
+                core.warning(`Issue #${issue.number} content changed after the signature request (hash ${currentHash} != ${expectedHash}); not closing.`);
+                skippedCount += 1;
+                continue;
+              }
+
               const candidateComments = comments
                 .filter((c) => {
                   const b = String(c.body || '');
-                  return attestationMarkers.some((marker) => b.includes(marker));
+                  return isBotComment(c) && attestationMarkers.some((marker) => b.includes(marker));
                 })
                 .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0));
 
@@ -458,7 +487,29 @@ jobs:
                 if (attRepo !== expectedRepo || attNumber !== issue.number) continue;
 
                 const signer = String(parsed.user_id || parsed.actor_login || '').toLowerCase();
-                if (expectedSigner && signer !== expectedSigner) continue;
+                if (!expectedSigner || signer !== expectedSigner) continue;
+                if (String(parsed.target_hash || parsed.commit_hash || '').toLowerCase() !== expectedHash) continue;
+                if (String(parsed.meaning_of_signature || '').trim() !== expectedMeaning) continue;
+
+                const verified = await evidence.verifySignatureEvidence({
+                  actionsClient,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  repositoryFull: String(process.env.GITHUB_REPOSITORY || repoFullName),
+                  defaultBranch,
+                  comment: c,
+                  attestation: parsed,
+                  signer,
+                  recordNumber: issue.number,
+                  prefix: `signer_attestation_${issue.number}`,
+                  exec,
+                  fs,
+                  core,
+                });
+                if (!verified.ok) {
+                  core.warning(`Attestation ${c.html_url} on issue #${issue.number} rejected: ${verified.reason}`);
+                  continue;
+                }
 
                 selected = parsed;
                 selectedCommentUrl = String(c.html_url || '');
@@ -525,6 +576,7 @@ jobs:
                   'Assets:',
                   '- `signed_attestation.json`',
                   '- `training_completion_manifest.json`',
+                  '- `signer_attestation.json` / `.sig` / `.pem` (signed manifest, Sigstore signature and certificate, verified)',
                 ].join('\n'),
                 draft: true,
                 prerelease: false,
@@ -542,6 +594,21 @@ jobs:
                 },
               });
 
+              for (const ext of ['json', 'sig', 'pem']) {
+                const content = fs.readFileSync(`signer_attestation_${issue.number}.${ext}`);
+                await github.rest.repos.uploadReleaseAsset({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  release_id: release.data.id,
+                  name: `signer_attestation.${ext}`,
+                  data: content,
+                  headers: {
+                    'content-type': ext === 'json' ? 'application/json' : 'text/plain',
+                    'content-length': content.length,
+                  },
+                });
+              }
+
               const completionContext = {
                 version: 1,
                 source_repository: `${context.repo.owner}/${context.repo.repo}`,
@@ -551,7 +618,7 @@ jobs:
                 trainee_login: expectedSigner,
                 trainee_full_name: parsedUser.fullName || expectedSigner,
                 roles_in_scope: rolesInScope,
-                completed_at_utc: String(selected.timestamp || new Date().toISOString()),
+                completed_at_utc: String(selected.timestamp || selected.timestamp_utc || new Date().toISOString()),
                 source_attestation_comment_url: selectedCommentUrl,
                 evidence_release_tag: tagName,
                 evidence_release_url: String(release.data.html_url || ''),

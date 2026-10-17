@@ -30,12 +30,13 @@ qms_tools:
     deployment: "Workflow .github/workflows/2.5_signature_git_native_fallback.yml (workflow_dispatch) with a Zeuthen-owned GitHub App posting signature attestations; no externally hosted signature service"
     purpose:
       - "Post-merge electronic signature manifestation for controlled PRs (signer identity = authenticated GitHub account, typed full legal name, signature meaning, target hash)"
+      - "Training-issue (3.2) and QMS-release planning issue (2.7) electronic signatures through the same workflow (decided by the QMS owner on 2026-10-17)"
     validation_status: "planned_for_validation"
     last_validation_review: "TODO: set when the SOP-006 validation is completed"
     evidence_reference: "TODO: records/validation/ validation record under SOP-006"
     change_control_required: true
     criticality: "high"
-    notes: "TODO: training-issue (3.2) and QMS-release (2.7) signatures still require a signing endpoint; decide and validate the approach before first use (see docs/architecture/README.md section 11)."
+    notes: "Training-issue and QMS-release signature paths, the run and Sigstore verification in 3.2 / 2.7, and the authentication rationale (GitHub session with enforced 2FA plus typed full legal name, no separate PIN) must be validated under SOP-006 before first use (see docs/architecture/README.md section 11)."
 ai_development_tools:
   - tool_id: DEV-TOOL-001
     name: Claude Code

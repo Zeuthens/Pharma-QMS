@@ -1,9 +1,7 @@
 {
   "schema_version": 1,
   "tracked_baseline_file": "adoption/upstream-baseline.json",
-  "required_repo_variables": [
-    "SIGNATURE_UI_BASE_URL"
-  ],
+  "required_repo_variables": [],
   "required_repo_secrets": [
     "QMS_BOT_APP_ID",
     "QMS_BOT_APP_PRIVATE_KEY"
@@ -20,8 +18,11 @@
     "REPLACE_WITH_",
     "TODO"
   ],
+  "recommended_settings": [
+    "Move the QMS_BOT_APP_ID and QMS_BOT_APP_PRIVATE_KEY secrets to a GitHub environment whose deployment branches are restricted to main, and declare that environment on the jobs that use them, so branch copies of the signature workflows cannot obtain the App token.",
+    "Enforce two-factor authentication for every account in matrices/signer_registry.json and matrices/training_matrix.yml (organisation 2FA requirement, or verified per signer); git-native signatures rely on the GitHub session plus 2FA and the typed full legal name, with no separate PIN."
+  ],
   "blockers": [
-    "SIGNATURE_UI_BASE_URL (signing endpoint) or an approved, validated fallback is required before training (3.2) and QMS-release (2.7) signatures can be captured; 2.5 covers merged-PR signatures only.",
     "A second qualified signer must be added to matrices/signer_registry.json and matrices/training_matrix.yml before controlled changes to sops/, qm/, records/, matrices/ can be signed."
   ]
 }

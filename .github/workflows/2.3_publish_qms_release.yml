@@ -351,7 +351,7 @@ jobs:
               });
             }
 
-      - name: Release package signature notice (2.7 dispatched manually)
+      - name: Dispatch release package signature request (2.7)
         uses: actions/github-script@v8
         with:
           script: |
@@ -370,9 +370,12 @@ jobs:
               issue_number: issueNumber,
               per_page: 100,
             });
+            // Pharma-QMS: only markers posted by the QMS GitHub App (2.7) count.
+            const isQmsAppComment = (c) => String(c.user?.login || '').toLowerCase() === 'zeuthen-pharma-qms-bot[bot]' &&
+              (!c.performed_via_github_app || String(c.performed_via_github_app.slug || '').toLowerCase() === 'zeuthen-pharma-qms-bot');
             const alreadyRequested = comments.some((comment) => {
               const body = String(comment.body || '');
-              return (
+              return isQmsAppComment(comment) && (
                 body.includes('<!-- qms-release-signature-request -->') ||
                 body.includes('<!-- qms-release-signature-complete -->')
               ) && body.includes(`"release_tag": "${releaseTag}"`);
@@ -382,13 +385,17 @@ jobs:
               return;
             }
 
-            // Pharma-QMS: 2.7 is NOT dispatched automatically. Workflow 2.7 (and 3.2)
-            // need a signing endpoint in SIGNATURE_UI_BASE_URL, which Pharma-QMS does not
-            // have yet (the git-native workflow 2.5 covers merged-PR signatures only).
-            // Until a release-signature method is approved and validated under SOP-006
-            // (adoption blocker, see README "Adoption status"), run 2.7 manually via
-            // workflow_dispatch once SIGNATURE_UI_BASE_URL or an approved fallback exists.
-            core.notice(
-              `Release package signature for ${releaseTag} was NOT requested automatically. ` +
-              'Run workflow 2.7 manually (workflow_dispatch, release_tag input) once SIGNATURE_UI_BASE_URL or an approved fallback signature method is configured.'
-            );
+            // Pharma-QMS: 2.7 posts the release signature request on the planning issue;
+            // signers then sign with the git-native workflow 2.5 (no hosted endpoint).
+            // A release created with GITHUB_TOKEN does not trigger 2.7's release event,
+            // so it is dispatched explicitly here.
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: '2.7_qms_release_signature_flow.yml',
+              ref: String(context.payload.repository?.default_branch || 'main'),
+              inputs: {
+                release_tag: releaseTag,
+              },
+            });
+            core.info(`Dispatched 2.7 release signature request for ${releaseTag} (planning issue #${issueNumber}).`);
