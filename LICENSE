@@ -1,0 +1,17 @@
+Pharma-QMS (Zeuthen) uses split licensing, inherited from the source baseline it is adapted from (see `NOTICE`).
+
+Unless a file says otherwise:
+
+- Code, scripts, GitHub Actions workflows, and automation assets are licensed under Apache License 2.0.
+- SOPs, work instructions, templates, docs, matrices, and other narrative content are licensed under Creative Commons Attribution-ShareAlike 4.0 International. Adapted narrative content remains under CC BY-SA 4.0.
+
+Practical mapping:
+
+- Apache-2.0: `.github/`, `scripts/`, `tools/`, machine-readable config files intended as software or automation artifacts
+- CC BY-SA 4.0: `README.md`, `docs/`, `qm/`, `sops/`, `wis/`, `records/`, `matrices/`, and other documentation/content unless a narrower notice is present
+
+Additional terms:
+
+- no regulatory, legal, or quality-system warranty is provided; see `DISCLAIMER.md`
+- attribution to the source baseline is maintained in `NOTICE`
+- repository license notices and official license references are provided in `LICENSES/Apache-2.0.txt` and `LICENSES/CC-BY-SA-4.0.txt`

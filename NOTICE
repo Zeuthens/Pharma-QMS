@@ -1,0 +1,76 @@
+Pharma-QMS
+Copyright 2026 Zeuthen. Portions copyright the upstream baseline contributors.
+
+Attribution (CC BY-SA 4.0 and Apache-2.0)
+-----------------------------------------
+Pharma-QMS is adapted from "DearAuditor Open QMS Baseline", release
+QMS-2026-07-09-R005, by AliakseiT (Aliaksei T.):
+  https://github.com/AliakseiT/dearauditor-qms-baseline
+  https://github.com/AliakseiT/dearauditor-qms-baseline/releases/tag/QMS-2026-07-09-R005
+The upstream work does not name a creator in its README, LICENSE or NOTICE and
+has no CITATION.cff; it is credited here by its repository owner account.
+
+Narrative content (SOPs, WIs, templates, docs, matrices) is used under the
+Creative Commons Attribution-ShareAlike 4.0 International licence,
+https://creativecommons.org/licenses/by-sa/4.0/ ; code and automation are used
+under the Apache License, Version 2.0, https://www.apache.org/licenses/LICENSE-2.0 .
+
+The material has been modified: rebranded for Zeuthen, tailored to the
+"App with AI" adoption profile with a GxP context, and medical-device-only
+content removed. Adapted narrative content remains licensed under CC BY-SA 4.0.
+
+Licensing of this repository
+----------------------------
+- code and automation artifacts: Apache License 2.0 (LICENSES/Apache-2.0.txt)
+- SOPs, WIs, templates, docs, matrices, and other narrative content:
+  CC BY-SA 4.0 (LICENSES/CC-BY-SA-4.0.txt)
+
+Modified files (Apache-2.0)
+---------------------------
+The following files under .github/, scripts/ and tools/ were modified from the
+upstream release by Zeuthen on 2026-10-17 (rebranding, removal of upstream
+service references, git-native signature routing, adoption tooling):
+- .github/CODEOWNERS
+- .github/ISSUE_TEMPLATE/change_impact_assessment.yml
+- .github/ISSUE_TEMPLATE/complaint_intake.yml
+- .github/ISSUE_TEMPLATE/design_development_plan.yml
+- .github/ISSUE_TEMPLATE/final_release_decision.yml
+- .github/ISSUE_TEMPLATE/nonconformity_intake.yml
+- .github/ISSUE_TEMPLATE/release_plan.yml
+- .github/ISSUE_TEMPLATE/risk_management_plan.yml
+- .github/ISSUE_TEMPLATE/training_release_diff.yml
+- .github/ISSUE_TEMPLATE/usability_engineering_plan.yml
+- .github/ISSUE_TEMPLATE/verification_validation_plan.yml
+- .github/scripts/role-coverage.js
+- .github/scripts/role-coverage.test.js
+- .github/workflows/1.1_auto_assign_signatory_reviewers.yml
+- .github/workflows/1.2_required_reviewer_approval_gate.yml
+- .github/workflows/1.3_auto_merge_after_signatory_approvals.yml
+- .github/workflows/1.5_pr_description_gate.yml
+- .github/workflows/2.1_pr_signature_request_gate.yml
+- .github/workflows/2.2_publish_qms_records.yml
+- .github/workflows/2.3_publish_qms_release.yml
+- .github/workflows/2.4_signature_attestation_title_page.yml
+- .github/workflows/2.5_signature_git_native_fallback.yml
+- .github/workflows/2.7_qms_release_signature_flow.yml
+- .github/workflows/3.2_training_issue_signature_flow.yml
+- scripts/generate_part11_title_page.py
+- scripts/rebuild_training_status.py
+- scripts/resolve_signature_policy.py
+- scripts/tests/test_resolve_signature_policy.py
+- tools/check_adoption_readiness.sh
+- tools/qms_distribution.py
+- tools/validate_github_qms_export.py
+Files under .github/, scripts/ and tools/ not listed above are unmodified
+upstream copies.
+
+Upstream NOTICE
+---------------
+The upstream NOTICE file is reproduced verbatim below:
+
+DearAuditor Open QMS Baseline publishes reusable quality-system content and automation in a split-license model:
+
+- code and automation artifacts: Apache-2.0
+- SOPs, WIs, templates, docs, and example seed content: CC BY-SA 4.0
+
+This repository also contains fictional company/example material used to dogfood the workflow model. Adopters are expected to validate suitability, tailor company-owned files, and operate their own controlled repositories.
