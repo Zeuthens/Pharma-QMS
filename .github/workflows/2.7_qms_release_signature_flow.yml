@@ -3,10 +3,11 @@ name: 2.7 QMS Release Signature Flow
 run-name: 2.7 QMS Release Signature Flow
 
 on:
-  # Pharma-QMS: the automatic `release: published` trigger is removed because this
-  # workflow needs SIGNATURE_UI_BASE_URL (signing endpoint), which is not configured
-  # yet (adoption blocker). Run it via workflow_dispatch once a release-signature
-  # method is approved; issue_comment only reconciles posted attestations.
+  # Pharma-QMS: no hosted signing endpoint. Signers sign the release planning issue
+  # with the git-native workflow 2.5; issue_comment reconciles the posted attestations.
+  # 2.3 also dispatches this workflow after publishing a QMS release.
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       release_tag:
@@ -246,7 +247,10 @@ jobs:
               issue_number: prNumber,
               per_page: 100,
             });
+            // Pharma-QMS: only the bot-posted 2.1 request defines the release signer slots.
+            const automationBotLogins = new Set(['zeuthen-pharma-qms-bot', 'zeuthen-pharma-qms-bot[bot]', 'github-actions[bot]']);
             const requestComments = comments
+              .filter((comment) => automationBotLogins.has(String(comment.user?.login || '').toLowerCase()))
               .filter((comment) => String(comment.body || '').includes('<!-- SIGNATURE_REQUEST_CONTEXT_V1'))
               .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0));
             const latest = requestComments[requestComments.length - 1];
@@ -286,7 +290,6 @@ jobs:
           SIGNERS_JSON: ${{ steps.signers.outputs.signers_json }}
           ROLES_CSV: ${{ steps.signers.outputs.roles_csv }}
           ELIGIBLE_SIGNERS_CSV: ${{ steps.signers.outputs.eligible_signers_csv }}
-          SIGNATURE_UI_BASE_URL: ${{ vars.SIGNATURE_UI_BASE_URL }}
         with:
           github-token: ${{ steps.app_token.outputs.token }}
           script: |
@@ -311,21 +314,12 @@ jobs:
               core.setFailed('A valid release planning issue number is required.');
               return;
             }
-            const signingBaseUrl = String(process.env.SIGNATURE_UI_BASE_URL || '').trim().replace(/\/+$/g, '');
-            if (!signingBaseUrl) {
-              core.setFailed('SIGNATURE_UI_BASE_URL is not configured.');
-              return;
-            }
+            // Pharma-QMS: no hosted signing endpoint. Each signer runs the git-native
+            // workflow 2.5 on this issue; 2.5 re-verifies the release package hash and
+            // the signer slot against the release decision PR before signing.
+            const gitNativeWorkflowUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/workflows/2.5_signature_git_native_fallback.yml`;
             const signers = JSON.parse(String(process.env.SIGNERS_JSON || '[]'));
-            const buildLink = (slot) => {
-              const params = new URLSearchParams({
-                repo: `${context.repo.owner}/${context.repo.repo}`,
-                pr: String(issueNumber),
-                signer: String(slot.signer || '').toLowerCase(),
-                role: String(slot.role || ''),
-              });
-              return `${signingBaseUrl}/sign?${params.toString()}`;
-            };
+            const buildLink = () => gitNativeWorkflowUrl;
             const requestContext = {
               version: 1,
               hash: String(process.env.TARGET_HASH || '').trim(),
@@ -426,9 +420,9 @@ jobs:
               `- Release decision PR: #${String(process.env.RELEASE_PR || '').trim()}.`,
               '',
               'How to sign:',
-              '1. Open the link next to your GitHub username below.',
-              '2. Sign in with that same GitHub account.',
-              '3. Confirm with your QMS PIN.',
+              '1. Open the link next to your GitHub username below (workflow 2.5 Manual Signature Attestation Fallback).',
+              `2. Click "Run workflow", enter pr_number ${issueNumber} (this issue) and type your full legal name as your signature assertion.`,
+              '3. Run the workflow while signed in with that same GitHub account; it posts the signature attestation on this issue.',
               '',
               ...links,
               '',
@@ -563,8 +557,11 @@ jobs:
               issue_number: issueNumber,
               per_page: 100,
             });
+            // Pharma-QMS: only bot-posted requests and attestations (workflow 2.5) are evidence.
+            const automationBotLogins = new Set(['zeuthen-pharma-qms-bot', 'zeuthen-pharma-qms-bot[bot]', 'github-actions[bot]']);
+            const isBotComment = (comment) => automationBotLogins.has(String(comment.user?.login || '').toLowerCase());
             const requestComment = comments
-              .filter((comment) => String(comment.body || '').includes('<!-- qms-release-signature-request -->'))
+              .filter((comment) => isBotComment(comment) && String(comment.body || '').includes('<!-- qms-release-signature-request -->'))
               .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0))
               .pop();
             if (!requestComment) {
@@ -592,7 +589,7 @@ jobs:
                 body.includes('<!-- PART11_ATTESTATION_V1 -->') ||
                 body.includes('<!-- signature-native-attestation -->') ||
                 body.includes('<!-- part11-native-attestation -->');
-              if (!isAttestation) continue;
+              if (!isAttestation || !isBotComment(comment)) continue;
               const payload = parseJsonBlock(body);
               if (!payload) continue;
 
@@ -606,6 +603,7 @@ jobs:
               if (targetHash !== expectedHash) continue;
               if (meaning !== expectedMeaning) continue;
               if (!signerLogin) continue;
+              if (expectedSigners.length > 0 && !expectedSigners.includes(signerLogin)) continue;
 
               bySigner.set(signerLogin, {
                 user_id: String(payload.user_id || payload.actor_login || '').trim(),
