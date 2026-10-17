@@ -1,0 +1,49 @@
+version: 1
+owner_role: qa_lead
+validation_basis: "Risk-based validation of QMS tools for intended use under SOP-006 (ISO 9001:2015 7.1.5 / 7.5, with GAMP 5 and EU GMP Annex 11 as GxP context)"
+qms_tools:
+  - tool_id: QMS-TOOL-001
+    name: GitHub
+    deployment: "GitHub Cloud (repository Zeuthens/Pharma-QMS and designated product repositories such as Zeuthens/impd-automation)"
+    purpose:
+      - "Source control for controlled QMS and product records"
+      - "Issue management for planning and workflow intake"
+      - "Pull request workflow for approvals, signatures, and immutable publication"
+      - "Branch protection / rulesets as the merge-control boundary"
+    validation_status: "planned_for_validation"
+    last_validation_review: "TODO: set when the SOP-006 validation is completed"
+    evidence_reference: "TODO: records/validation/ validation record under SOP-006"
+    change_control_required: true
+    criticality: "high"
+  - tool_id: QMS-TOOL-002
+    name: GitHub Actions
+    deployment: "GitHub-hosted runners executing .github/workflows in Zeuthens/Pharma-QMS"
+    purpose:
+      - "Workflow automation for approval gates, content validation, signature requests, training automation, and immutable record and QMS release publication"
+    validation_status: "planned_for_validation"
+    last_validation_review: "TODO: set when the SOP-006 validation is completed"
+    evidence_reference: "TODO: records/validation/ validation record under SOP-006"
+    change_control_required: true
+    criticality: "high"
+  - tool_id: QMS-TOOL-003
+    name: Git-native electronic signatures
+    deployment: "Workflow .github/workflows/2.5_signature_git_native_fallback.yml (workflow_dispatch) with a Zeuthen-owned GitHub App posting signature attestations; no externally hosted signature service"
+    purpose:
+      - "Post-merge electronic signature manifestation for controlled PRs (signer identity = authenticated GitHub account, typed full legal name, signature meaning, target hash)"
+    validation_status: "planned_for_validation"
+    last_validation_review: "TODO: set when the SOP-006 validation is completed"
+    evidence_reference: "TODO: records/validation/ validation record under SOP-006"
+    change_control_required: true
+    criticality: "high"
+    notes: "TODO: training-issue (3.2) and QMS-release (2.7) signatures still require a signing endpoint; decide and validate the approach before first use (see docs/architecture/README.md section 11)."
+ai_development_tools:
+  - tool_id: DEV-TOOL-001
+    name: Claude Code
+    supplier: "Anthropic"
+    purpose:
+      - "AI coding and authoring assistant used to develop product software and to draft QMS content; all output is reviewed and approved by a human through the controlled PR workflow"
+    qms_record_role: "Does not create, approve, or retain QMS records on its own; changes enter the QMS only through reviewed and signed pull requests."
+    validation_status: "not_yet_assessed"
+    validation_note: "TODO: perform a risk-based intended-use assessment under SOP-006 (and supplier evaluation under SOP-010) to decide whether validation is required, define usage controls (human review, no autonomous merge, data-handling settings), and record the decision in records/validation/."
+    change_control_required: true
+    criticality: "TODO: assess"

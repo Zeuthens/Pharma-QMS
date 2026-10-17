@@ -1,0 +1,156 @@
+---
+sop_id: SOP-019
+title: Usability Engineering (IEC 62366-1:2015 as good practice)
+revision: R14
+revision_date: 2026-10-17
+status: Published
+owner_role: usability_lead
+approver_role: qa_lead
+related_issue: "TODO: link the Pharma-QMS adoption issue"
+---
+## 1. Purpose
+Define a risk-based usability engineering process for Zeuthen user-facing software products, aligned with IEC 62366-1:2015 and integrated with risk management.
+
+## 2. Scope
+Applies to user interface design and evaluation activities that affect safety, including:
+- intended use and reasonably foreseeable misuse
+- hazard-related use scenarios
+- formative and summative usability evaluation
+- user interface of unknown provenance (UOUP)
+
+## 3. Process Strategy
+1. Maintain usability engineering records in a controlled system that supports traceability, review, and retention requirements.
+2. Keep records concise, structured, and focused on safety-related usability decisions.
+3. Maintain objective evidence sufficient to justify usability-related risk control and residual risk decisions.
+4. Link usability findings directly to ISO 14971:2019 risk items and product changes.
+5. This QMS repository defines governance and traceability expectations; operational usability records are maintained in designated product or study repositories.
+
+## 4. Required Inputs
+- Product intended use and user profiles
+- Risk management plan/register (`SOP-018` artifacts)
+- UI requirements and architecture
+- Complaint/post-production use-related signals
+
+## 5. Required Outputs
+- Maintained usability engineering file
+- Formative and summative evidence records
+- Updated use-related risk controls and residual risk rationale
+
+## 6. Roles and Responsibilities
+| Role | Responsibilities |
+|---|---|
+| Usability Lead | Owns use context, user profiles, critical tasks, formative/summative evaluation planning, and the usability file. |
+| Engineering Lead | Implements UI risk controls and design updates. |
+| QA Lead | Verifies process compliance, confirms intended-use, labeling, and regulatory assumptions used in usability evaluations, and ensures usability file completeness. |
+| Management Representative | Approves major residual use-risk decisions. |
+
+## 7. Lightweight Usability File Structure
+For each product, maintain:
+
+`<product-or-study-repository>/records/usability/<product-id>/`
+- `usability_file_index.yml`
+- `use_specification.yml`
+- `ui_safety_characteristics.yml`
+- `hazard_related_use_scenarios.yml`
+- `formative_evaluation_log.yml`
+- `summative_evaluation_record.yml`
+- `uoup_evaluation.yml` (if applicable)
+- `post_production_usability_review.yml`
+
+The file index is the entrypoint for audits and must reference current revisions of all required records.
+
+## 8. Procedure
+
+### 8.1 General Requirements (IEC 62366-1:2015 4.1.1)
+1. Apply usability engineering activities as part of development lifecycle.
+2. Tailor effort by risk, complexity, and novelty.
+3. Maintain objective evidence in the usability engineering file.
+
+### 8.2 Risk Control and Information for Safety (4.1.2, 4.1.3)
+1. Treat user interface risk controls as risk controls within the ISO 14971:2019 process.
+2. Information for safety is used only when design/protective controls are insufficient.
+3. Claims that rely on user behavior must be verified in evaluation evidence.
+
+### 8.3 Prepare Use Specification (5.1)
+1. Define intended users, use environments, operating conditions, and critical tasks.
+2. Document reasonably foreseeable misuse relevant to safety.
+
+### 8.4 Identify UI Characteristics and Potential Use Errors (5.2)
+1. Identify UI characteristics related to safety.
+2. Use error is defined as a user action or lack of action that leads to a different result than intended by the manufacturer or expected by the user and may contribute to harm.
+3. Identify potential use errors by task and workflow step.
+4. Link each potential use error to affected risk items.
+
+### 8.5 Identify Hazards/Hazardous Situations and Scenarios (5.3, 5.4)
+1. Identify known or foreseeable hazards/hazardous situations related to use.
+2. Define hazard-related use scenarios with event sequence and possible harm.
+
+### 8.6 Select Scenarios for Summative Evaluation (5.5)
+1. Select scenarios based on severity, probability, and uncertainty.
+2. Include high-severity and high-uncertainty scenarios even if infrequent.
+
+### 8.7 Establish UI Specification and Evaluation Plan (5.6, 5.7)
+1. Define UI requirements and safety-critical acceptance criteria.
+2. Define formative and summative evaluation plans with participant profiles and pass/fail criteria.
+
+### 8.8 Perform Design, Formative Evaluation, and Iteration (5.8)
+1. Conduct formative evaluations iteratively.
+2. Record only essential evidence: scenario, participant type, observed use errors, disposition, and follow-up action.
+3. Close findings through tracked design/risk updates.
+
+### 8.9 Perform Summative Evaluation (5.9)
+1. Execute representative validation against selected hazard-related use scenarios.
+2. Document conclusion on whether usability-related residual risks are acceptable.
+3. Product release shall not proceed unless usability-related residual risks are evaluated and determined acceptable.
+4. If not acceptable, return to design/risk control updates.
+
+### 8.10 User Interface of Unknown Provenance (UOUP) Handling (5.10)
+1. For UI elements of unknown provenance, perform a focused UOUP evaluation record.
+2. Review post-production evidence and apply additional controls where needed.
+
+### 8.11 Post-Production Feedback Loop
+1. At least quarterly, review complaints/incidents/usability signals.
+2. Update use-related hazards/scenarios and risk controls when assumptions change.
+3. Keep usability file current at each major release.
+
+## 9. Required Records
+- Product usability file index and referenced records in the designated product/study repository
+- Formative and summative evaluation evidence
+- UOUP evaluation record (if applicable)
+- Links to related risk and change records
+
+## 10. Traceability
+| Standard Clause | Control in this SOP |
+|---|---|
+| ISO 13485:2016 7.3 | Defines usability-related design and development controls and traceable evaluation outputs. |
+| ISO 13485:2016 7.5.1 | Defines controlled implementation of user-interface measures and information for safety. |
+| IEC 62366-1:2015 4.1.1-4.3 | Defines process, risk-control linkage, usability file, and effort tailoring. |
+| IEC 62366-1:2015 5.1-5.7 | Defines use specification, hazard-related scenario identification, and evaluation planning. |
+| IEC 62366-1:2015 5.8-5.9 | Defines formative iteration and summative validation evidence. |
+| IEC 62366-1:2015 5.10 | Defines handling of user interface of unknown provenance. |
+
+## 11. Related Controlled Documents
+- SOP-018 Risk Management (ISO 14971:2019 as good practice)
+- SOP-008 Design and Development Control
+- SOP-009 Change Management
+- SOP-012 Feedback and Complaint Handling
+- SOP-014 Post-Market Surveillance (not applicable for the App with AI profile; not part of Pharma-QMS)
+
+## 12. Revision History
+| Revision | Revision Date | Change Summary |
+|---|---|---|
+| R00 | 2026-03-02 | Initial full release with lightweight usability-file model for Git/GitHub execution. |
+| R01 | 2026-03-05 | Clarified multi-repository model for usability records, linked to the source-baseline tracking issue, and aligned procedure with implemented GitHub lifecycle (issue -> PR -> merge -> post-merge signature attestation -> immutable release). |
+| R02 | 2026-03-07 | Renamed the usability process business owner role to the controlled product/regulatory owner role used in small-team deployments. |
+| R03 | 2026-03-07 | Simplified usability role names to `regulatory_lead` and `engineering_lead`. |
+| R04 | 2026-03-07 | Introduced `usability_lead` as the accountable usability role and clarified the boundary between usability ownership and regulatory oversight. |
+| R05 | 2026-03-07 | Clarified that usability-record PRs may carry their own controlled change context without a mandatory linked issue. |
+| R06 | 2026-03-07 | Removed overly specific signature-regulation terminology from the usability signature workflow wording. |
+| R07 | 2026-03-10 | Updated open-source baseline naming and publication references used in the usability procedure set. |
+| R08 | 2026-03-18 | Removed top-table standards clause metadata; normative references remain in the Traceability section. |
+| R09 | 2026-03-18 | Added the missing ISO 13485:2016 traceability mappings alongside the IEC 62366-1:2015 references in Section 10. |
+| R10 | 2026-03-25 | Reframed the process as risk-based, clarified use-error and residual-risk wording, expanded the UOUP heading, and removed workflow-specific controls covered elsewhere in the QMS. |
+| R11 | 2026-03-27 | Consolidated the standalone regulatory-lead usability-review role into the QA-lead baseline and aligned the role table accordingly. |
+| R12 | 2026-04-27 | Renamed YAML metadata field `effective_date` to `revision_date` to align controlled-document metadata with the tag-based publication model. The effective date is derived from the published QMS release tag rather than from the document front matter. |
+| R13 | 2026-05-04 | Standardize standards citations to specific versions. |
+| R14 | 2026-10-17 | Adopted into Pharma-QMS for Zeuthen from the upstream baseline release QMS-2026-07-09-R005; tailored for the App with AI profile; pending approval. |

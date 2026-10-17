@@ -1,0 +1,186 @@
+version: 9
+# Pharma-QMS (Zeuthen) - App with AI adoption profile, GxP context.
+# Tailored at adoption from the source baseline traceability matrix (version 8):
+# the primary standard is ISO 9001:2015; medical-device standards and the
+# medical-device-only procedures (SOP-007, SOP-013, SOP-014) are not applicable.
+standard:
+  exact_name: "ISO 9001:2015 Quality management systems - Requirements, including ISO 9001:2015/Amd 1:2024"
+  normative_base: "ISO 9001:2015 + ISO 9001:2015/Amd 1:2024"
+additional_standards:
+  - exact_name: "ISO/IEC 27001:2022 Information security, cybersecurity and privacy protection - Information security management systems - Requirements, including ISO/IEC 27001:2022/Amd 1:2024"
+    normative_base: "ISO/IEC 27001:2022 + ISO/IEC 27001:2022/Amd 1:2024"
+  - exact_name: "ISO/IEC 42001:2023 Information technology - Artificial intelligence - Management system"
+    normative_base: "ISO/IEC 42001:2023"
+additional_regulatory_frameworks:
+  - exact_name: "Regulation (EU) 2016/679 General Data Protection Regulation (GDPR)"
+    normative_base: "GDPR"
+gxp_context:
+  in_scope: true
+  rationale: "IMPD automation is used by pharmaceutical customers (first licensee: Egebro Consult) in GxP-regulated regulatory work."
+  frameworks:
+    - "ISPE GAMP 5 (Second Edition): A Risk-Based Approach to Compliant GxP Computerized Systems"
+    - "EudraLex Volume 4, Annex 11: Computerised Systems"
+  reference: "matrices/gamp5_gxp_gap_analysis.yml"
+not_applicable_for_profile:
+  - item: "ISO 13485:2016, IEC 62304:2006+A1:2015 (as conformity basis), ISO 14971:2019 (as conformity basis), IEC 62366-1:2015+A1:2020 (as conformity basis), IEC 82304-1:2016"
+    rationale: "Products in scope are not medical devices (matrices/regulatory_market_scope.yml). SOP-018, SOP-019, and SOP-020 keep their methods as good practice only."
+  - item: "Swiss nFADP"
+    rationale: "No Swiss processing in current scope (EU/Denmark). matrices/swiss_nfadp_gap_analysis.yml is retained for reference only."
+company_reference: "matrices/company_profile.yml"
+regulatory_scope_reference: "matrices/regulatory_market_scope.yml"
+qms_tooling_reference: "matrices/qms_tooling_inventory.yml"
+adoption_profile_reference: "matrices/adoption_profiles.yml"
+quality_manual_sections:
+  - section_id: QM-01
+    section_name: "QMS context, scope, and process map"
+    iso_clauses: ["4.1", "4.2", "4.3", "4.4"]
+    controlling_documents: ["QM-001", "SOP-005", "SOP-001"]
+    status: "implemented_with_adopter_specific_completion"
+  - section_id: QM-02
+    section_name: "Documented information control"
+    iso_clauses: ["7.5"]
+    controlling_documents: ["SOP-001"]
+    status: "implemented"
+  - section_id: QM-03
+    section_name: "Leadership, policy, objectives"
+    iso_clauses: ["5.1", "5.2", "6.2"]
+    controlling_documents: ["QM-001", "SOP-004", "SOP-016"]
+    status: "implemented_with_adopter_specific_completion"
+  - section_id: QM-04
+    section_name: "Roles, responsibilities, authority, communication"
+    iso_clauses: ["5.3", "7.4"]
+    controlling_documents: ["QM-001", "SOP-005", "SOP-011"]
+    status: "implemented"
+  - section_id: QM-05
+    section_name: "Management review"
+    iso_clauses: ["9.3"]
+    controlling_documents: ["SOP-004"]
+    status: "implemented"
+  - section_id: QM-06
+    section_name: "Competence and awareness"
+    iso_clauses: ["7.2", "7.3"]
+    controlling_documents: ["SOP-011"]
+    status: "implemented"
+  - section_id: QM-07
+    section_name: "Infrastructure and environment for operation of processes"
+    iso_clauses: ["7.1.3", "7.1.4"]
+    controlling_documents: ["SOP-017"]
+    status: "implemented"
+  - section_id: QM-08
+    section_name: "Design and development controls"
+    iso_clauses: ["8.1", "8.3"]
+    controlling_documents: ["SOP-008", "SOP-009", "SOP-020"]
+    status: "implemented"
+  - section_id: QM-09
+    section_name: "Control of externally provided processes, products, and services"
+    iso_clauses: ["8.4"]
+    controlling_documents: ["SOP-010"]
+    status: "implemented"
+  - section_id: QM-10
+    section_name: "Customer communication, feedback, and complaints"
+    iso_clauses: ["8.2.1", "9.1.2"]
+    controlling_documents: ["SOP-012"]
+    status: "implemented"
+  - section_id: QM-11
+    section_name: "Internal audit, monitoring, and analysis"
+    iso_clauses: ["9.1.1", "9.1.3", "9.2"]
+    controlling_documents: ["SOP-003", "SOP-016"]
+    status: "implemented"
+  - section_id: QM-12
+    section_name: "Nonconforming outputs, CAPA, and improvement"
+    iso_clauses: ["8.7", "10.2", "10.3"]
+    controlling_documents: ["SOP-015", "SOP-002"]
+    status: "implemented"
+  - section_id: QM-13
+    section_name: "Risk-based thinking and product risk management (incl. AI and cybersecurity risk)"
+    iso_clauses: ["6.1"]
+    controlling_documents: ["SOP-018", "SOP-008", "SOP-022"]
+    status: "implemented"
+  - section_id: QM-14
+    section_name: "Usability engineering (optional good practice for this profile)"
+    iso_clauses: ["8.3.3"]
+    controlling_documents: ["SOP-019", "SOP-008"]
+    status: "optional"
+  - section_id: QM-15
+    section_name: "Software lifecycle, configuration, release, and maintenance"
+    iso_clauses: ["8.3", "8.5.2", "8.5.6", "8.6"]
+    controlling_documents: ["SOP-020", "SOP-008", "SOP-009", "WI-001", "WI-002"]
+    status: "implemented"
+  - section_id: QM-16
+    section_name: "Computerized-system validation and GxP context (GAMP 5 / EU GMP Annex 11)"
+    iso_clauses: ["GAMP 5", "EU GMP Annex 11"]
+    controlling_documents: ["SOP-006", "SOP-020", "SOP-009", "SOP-010", "SOP-018", "WI-001"]
+    status: "implemented_with_adopter_specific_completion"
+  - section_id: QM-17
+    section_name: "Information security management"
+    iso_clauses: ["ISO/IEC 27001 4-10", "ISO/IEC 27001 Annex A"]
+    controlling_documents: ["SOP-021", "SOP-005", "SOP-001", "SOP-003", "SOP-004", "SOP-010", "SOP-011", "SOP-017"]
+    status: "implemented_with_product_specific_extensions"
+  - section_id: QM-18
+    section_name: "AI management for AI components inside Zeuthen software products"
+    iso_clauses: ["ISO/IEC 42001 4-10", "ISO/IEC 42001 Annex A"]
+    controlling_documents: ["SOP-022", "SOP-005", "SOP-008", "SOP-018", "SOP-020"]
+    status: "implemented_with_product_specific_extensions"
+  - section_id: QM-19
+    section_name: "Data protection and privacy management"
+    iso_clauses: ["GDPR"]
+    controlling_documents: ["SOP-023", "SOP-010", "SOP-017", "SOP-021", "SOP-008"]
+    status: "implemented_with_company_specific_completion_when_in_scope"
+  - section_id: QM-20
+    section_name: "General quality management (ISO 9001)"
+    iso_clauses: ["ISO 9001:2015 4-10"]
+    controlling_documents: ["QM-001", "SOP-005", "SOP-004", "SOP-011", "SOP-012", "SOP-016", "matrices/iso_9001_gap_analysis.yml"]
+    status: "implemented_with_adopter_specific_completion"
+supporting_definitions:
+  - item: "Regulatory market scope register"
+    status: "implemented_with_adopter_specific_completion"
+    reference: "matrices/regulatory_market_scope.yml"
+    note: "Records the EU (Denmark) market, the non-device determination for IMPD automation, and the GxP context. TODO: confirm the non-device determination at QMS approval."
+  - item: "Product-specific intended use and qualification statement"
+    status: "required_per_product"
+    reference: "<product-repo>/records/design/intended_use.md (for example Zeuthens/impd-automation)"
+    note: "Each product records its intended use, users, claims, and non-device qualification in its designated product repository."
+  - item: "QMS software tool inventory and validation"
+    status: "implemented_with_adopter_specific_completion"
+    reference: "matrices/qms_tooling_inventory.yml"
+    note: "GitHub, GitHub Actions, and git-native signatures are the QMS tooling; Claude Code is listed as an AI development tool. Validation under SOP-006 is still to be performed."
+  - item: "Infrastructure control baseline"
+    status: "implemented_with_product_specific_extensions"
+    reference: "sops/SOP-017-InfrastructureAndMaintenanceControl.md"
+    note: "Company baseline exists; each product maintains runtime-specific controls in its product repository."
+  - item: "Supplier criticality and approved supplier lifecycle model"
+    status: "implemented_with_adopter_specific_completion"
+    reference: "sops/SOP-010-SupplierAndPurchasingControl.md, records/suppliers/approved_supplier_list.yml"
+    note: "Supplier entries for GitHub and Anthropic are TODO placeholders pending vetting; Microsoft Azure and AWS are planned, not yet used."
+  - item: "Integrated risk management baseline (hazard, failure mode, cybersecurity, AI)"
+    status: "implemented"
+    reference: "sops/SOP-018-RiskManagement.md"
+    note: "One risk process and one risk file structure for software lifecycle control; ISO 14971 is used as a method reference only."
+  - item: "Usability engineering baseline (optional)"
+    status: "optional"
+    reference: "sops/SOP-019-UsabilityEngineering.md, <product-repo>/records/usability/*"
+    note: "Optional good practice for the App with AI profile."
+  - item: "Software lifecycle and release baseline model"
+    status: "implemented"
+    reference: "sops/SOP-020-SoftwareLifecycleConfigurationAndReleaseManagement.md, wis/WI-001-VerificationAndValidationExecution.md, wis/WI-002-ConfigurationAndReleaseManagementExecution.md"
+    note: "Lifecycle planning, GitHub-native V&V approval, and release-baseline control are part of the controlled QMS baseline."
+  - item: "GxP computerized-system overlay"
+    status: "implemented_with_adopter_specific_completion"
+    reference: "matrices/gamp5_gxp_gap_analysis.yml"
+    note: "Maps which GAMP 5 / Annex 11 / data-integrity expectations the QMS covers by reuse and which Zeuthen must supply for IMPD automation."
+  - item: "Information security management baseline"
+    status: "implemented_with_product_specific_extensions"
+    reference: "matrices/iso_27001_gap_analysis.yml, sops/SOP-021-InformationSecurityManagement.md"
+    note: "ISO/IEC 27001 ISMS scope, risk treatment, Statement of Applicability, control operation, incident, audit, review, and improvement interfaces."
+  - item: "AI management baseline for AI components inside Zeuthen software products"
+    status: "implemented_with_product_specific_extensions"
+    reference: "matrices/iso_iec_42001_gap_analysis.yml, sops/SOP-022-AIManagementSystem.md"
+    note: "ISO/IEC 42001 AIMS scope, AI risk and impact assessment, Statement of Applicability, lifecycle, data, information for users, event handling, audit, review, and improvement interfaces. AI tooling used to develop products or operate the QMS (for example Claude Code) is governed under supplier and tooling-validation controls."
+  - item: "Data protection and privacy management baseline"
+    status: "implemented_with_company_specific_completion_when_in_scope"
+    reference: "matrices/privacy_data_protection_gap_index.yml, matrices/gdpr_gap_analysis.yml, sops/SOP-023-DataProtectionAndPrivacyManagement.md, records/privacy/*"
+    note: "GDPR controls are provided for use when in scope. Zeuthen must instantiate processing records, lawful-basis assessments, DPIA decisions, rights-request handling, breach records, supplier DPA evidence, and transfer assessments for its actual processing before claiming compliance."
+  - item: "ISO 9001 general quality-management baseline"
+    status: "implemented_with_adopter_specific_completion"
+    reference: "matrices/iso_9001_gap_analysis.yml, sops/SOP-005-QMSGovernance.md, sops/SOP-012-FeedbackAndComplaintHandling.md, sops/SOP-016-QualityMetricsAndDataAnalysis.md"
+    note: "Zeuthen must tailor its company context, customer requirements, process-performance indicators, satisfaction signals, operational controls, and approval evidence before claiming conformity."

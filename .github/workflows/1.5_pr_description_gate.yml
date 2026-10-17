@@ -1,0 +1,176 @@
+# Modified by Zeuthen, 2026-10-17
+name: 1.5 PR Description Gate
+run-name: 1.5 PR Description Gate
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  validate_description:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Check PR body sections
+        id: structure
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) {
+              core.info('Not a pull request event. Skipping.');
+              return;
+            }
+            
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+            const changedPaths = files.map((f) => String(f.filename || ''));
+            const authorLogin = String(pr.user?.login || '').toLowerCase();
+            const isDependencyUpdatePath = (path) => (
+              path.endsWith('package.json') ||
+              path.endsWith('package-lock.json') ||
+              path.endsWith('pnpm-lock.yaml') ||
+              path.endsWith('yarn.lock') ||
+              path.endsWith('pyproject.toml') ||
+              path.endsWith('poetry.lock') ||
+              path.endsWith('Pipfile') ||
+              path.endsWith('Pipfile.lock') ||
+              path.endsWith('Gemfile') ||
+              path.endsWith('Gemfile.lock') ||
+              path.endsWith('go.mod') ||
+              path.endsWith('go.sum') ||
+              path.endsWith('Cargo.toml') ||
+              path.endsWith('Cargo.lock') ||
+              /^\.github\/workflows\/.+\.ya?ml$/i.test(path) ||
+              /(^|\/)requirements[^/]*\.txt$/i.test(path) ||
+              path === '.github/dependabot.yml'
+            );
+            if (
+              ['dependabot', 'dependabot[bot]'].includes(authorLogin) &&
+              changedPaths.length > 0 &&
+              changedPaths.every(isDependencyUpdatePath)
+            ) {
+              core.info('Dependabot dependency-update PR — bypassing PR description structure gate.');
+              core.setOutput('author_login', pr.user?.login || '');
+              core.setOutput('pr_body_base64', Buffer.from(pr.body || '', 'utf8').toString('base64'));
+              core.setOutput('changed_paths_json', JSON.stringify(changedPaths));
+              core.setOutput('skip_signer_role_policy', 'false');
+              return;
+            }
+
+            const body = pr.body || '';
+            const errors = [];
+            const bodyWithoutFencedCodeBlocks = body.replace(/```[\s\S]*?```/g, '');
+            const bodyWithoutMarkdownCode = bodyWithoutFencedCodeBlocks.replace(/`[^`\n]+`/g, '');
+            
+            // Check for Summary section
+            if (!/^##\s+Summary\b/mi.test(body)) {
+              errors.push('Missing "## Summary" section.');
+            }
+            
+            // Check for Why or Context section
+            if (!/^##\s+(Why|Context)\b/mi.test(body)) {
+              errors.push('Missing "## Why" or "## Context" section. Please explain the reason for the change.');
+            }
+            
+            // Check for Validation or Testing section
+            if (!/^##\s+(Validation|Testing)\b/mi.test(body)) {
+              errors.push('Missing "## Validation" or "## Testing" section. Please explain how the change was verified.');
+            }
+
+            // Reject escaped newline text in normal prose because it breaks review and signature parsing.
+            if (/\\n/.test(bodyWithoutMarkdownCode)) {
+              errors.push('PR body contains literal "\\n" text outside markdown code. Use real line breaks in markdown and update the PR with --body-file instead of shell-escaped multiline text.');
+            }
+
+            const requiresEvidenceChecklist = changedPaths.some((path) => path.startsWith('records/verification_validation/runs/')) ||
+              /^##\s+Evidence Review Package\b/mi.test(body);
+            const evidenceChecklistStatus = (prBody) => {
+              const lines = String(prBody || '').split(/\r?\n/);
+              const start = lines.findIndex((line) => /^##\s+Evidence Review Checklist\b/i.test(line));
+              if (start < 0) return { present: false, complete: true, total: 0, open: [] };
+              const next = lines.findIndex((line, index) => index > start && /^##\s+\S/.test(line));
+              const section = lines.slice(start + 1, next < 0 ? undefined : next).join('\n');
+              const items = Array.from(section.matchAll(/^\s*-\s*\[( |x|X)\]\s+(.+)$/gm));
+              const open = items
+                .filter((item) => item[1] === ' ')
+                .map((item) => String(item[2] || '').trim())
+                .filter(Boolean);
+              return {
+                present: true,
+                complete: items.length > 0 && open.length === 0,
+                total: items.length,
+                open,
+              };
+            };
+            const evidenceChecklist = evidenceChecklistStatus(body);
+            if (requiresEvidenceChecklist && !evidenceChecklist.present) {
+              errors.push('Evidence package PRs must include a "## Evidence Review Checklist" section.');
+            } else if (evidenceChecklist.present && !evidenceChecklist.complete) {
+              errors.push(
+                evidenceChecklist.total === 0
+                  ? 'Evidence Review Checklist section has no checkable items.'
+                  : `Evidence Review Checklist has ${evidenceChecklist.open.length} unchecked item(s): ${evidenceChecklist.open.join('; ')}`
+              );
+            }
+            
+            if (errors.length > 0) {
+              core.setFailed(`PR description does not meet Pharma-QMS structural requirements:\n- ${errors.join('\n- ')}`);
+            } else {
+              core.info('PR description structure is compliant.');
+            }
+
+            core.setOutput('author_login', pr.user?.login || '');
+            core.setOutput('pr_body_base64', Buffer.from(body, 'utf8').toString('base64'));
+            core.setOutput('changed_paths_json', JSON.stringify(changedPaths));
+            const automationBotLogins = new Set([
+              'zeuthen-pharma-qms-bot',
+              'zeuthen-pharma-qms-bot[bot]',
+              'github-actions[bot]',
+            ]);
+            const generatedTrainingStatusPaths = new Set([
+              'records/training/training_status.csv',
+              'records/training/training_status.md',
+              'records/training/training_status.yml',
+            ]);
+            const isGeneratedTrainingStatusRefresh = (
+              changedPaths.length > 0 &&
+              changedPaths.every((path) => generatedTrainingStatusPaths.has(path))
+            );
+            core.setOutput(
+              'skip_signer_role_policy',
+              automationBotLogins.has(authorLogin) && isGeneratedTrainingStatusRefresh ? 'true' : 'false'
+            );
+
+      - name: Validate signer-role policy
+        if: steps.structure.outputs.skip_signer_role_policy != 'true'
+        run: |
+          python3 scripts/resolve_signature_policy.py \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --author "${AUTHOR_LOGIN}" \
+            --body-base64 "${PR_BODY_BASE64}" \
+            --paths-json "${CHANGED_PATHS_JSON}"
+        env:
+          AUTHOR_LOGIN: ${{ steps.structure.outputs.author_login }}
+          PR_BODY_BASE64: ${{ steps.structure.outputs.pr_body_base64 }}
+          CHANGED_PATHS_JSON: ${{ steps.structure.outputs.changed_paths_json }}
+
+      - name: Skip signer-role policy for generated training status refresh PRs
+        if: steps.structure.outputs.skip_signer_role_policy == 'true'
+        run: |
+          echo "Skipping signer-role policy for bot-authored generated training status refresh PR."

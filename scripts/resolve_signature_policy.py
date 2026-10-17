@@ -1,0 +1,621 @@
+#!/usr/bin/env python3
+# Modified by Zeuthen, 2026-10-17
+"""Resolve signer-role policy from PR content and the author's role set."""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import re
+import sys
+from pathlib import Path
+from typing import Any
+
+
+ROLE_DISPLAY_NAMES = {
+    "qa_lead": "Quality Assurance Lead",
+    "engineer": "Engineer",
+    "engineering_lead": "Engineering Lead",
+    "technical_qms_maintainer": "Technical QMS Maintainer",
+    "regulatory_lead": "Regulatory Lead",
+    "usability_lead": "Usability Lead",
+    "management_representative": "Management Representative",
+}
+
+TECHNICAL_QMS_MAINTAINER_PREFIXES = (
+    ".github/",
+    "scripts/",
+    "tools/",
+)
+
+CONTROLLED_DOCUMENT_SIGNATURE_MEANING = "Approved Controlled Document Revision"
+DEFAULT_SIGNATURE_MEANING = "Approved Quality Record"
+CONTROLLED_DOCUMENT_SIGNER_ROLES = [
+    "Management Representative",
+    "Quality Assurance Lead",
+]
+CONTROLLED_DOCUMENT_REQUIRED_SIGNATURES = 2
+
+CONTROLLED_DOC_PREFIXES = ("qm/", "sops/", "wis/")
+
+EXECUTION_RECORD_PREFIX = "records/"
+AUTOMATION_BOT_LOGINS = {
+    # TODO(Zeuthen): keep in sync with the slug of the Zeuthen-owned GitHub App.
+    "zeuthen-pharma-qms-bot",
+    "zeuthen-pharma-qms-bot[bot]",
+    "dependabot",
+    "dependabot[bot]",
+    "github-actions[bot]",
+}
+
+DEPENDABOT_LOGINS = {
+    "dependabot",
+    "dependabot[bot]",
+}
+
+DEPENDABOT_SIGNATURE_MEANING = "Approved Dependency Update"
+DEPENDABOT_SIGNER_ROLES = ["Technical QMS Maintainer"]
+DEPENDABOT_REQUIRED_SIGNATURES = 1
+DEPENDENCY_UPDATE_PATH_RE = re.compile(r"(^|/)requirements[^/]*\.txt$", re.IGNORECASE)
+DEPENDENCY_UPDATE_FILENAMES = {
+    ".github/dependabot.yml",
+    "Cargo.lock",
+    "Cargo.toml",
+    "Gemfile",
+    "Gemfile.lock",
+    "Pipfile",
+    "Pipfile.lock",
+    "go.mod",
+    "go.sum",
+    "package-lock.json",
+    "package.json",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "pyproject.toml",
+    "yarn.lock",
+}
+
+
+def _normalize_label(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").strip().lower()).strip()
+
+
+def _display_name_for_role(role_id: str) -> str:
+    return ROLE_DISPLAY_NAMES.get(role_id, role_id.replace("_", " ").title())
+
+
+def _role_id_for_label(label: str) -> str | None:
+    normalized = _normalize_label(label)
+    for role_id, display in ROLE_DISPLAY_NAMES.items():
+        if normalized in {_normalize_label(role_id), _normalize_label(display)}:
+            return role_id
+    return None
+
+
+def _extract_signature_field(body: str, label: str) -> str | None:
+    # Prefer the last occurrence so that narrative prose above the actual
+    # "## Signature Requirements" block (which may reference the literal
+    # field name — e.g., explaining that a PR must declare
+    # `**Signer Roles:**`) does not shadow the real declaration.
+    pattern = rf"\*\*{re.escape(label)}:\*\*\s*([^\n]+)"
+    matches = list(re.finditer(pattern, body, flags=re.IGNORECASE))
+    if not matches:
+        return None
+    match = matches[-1]
+    raw = match.group(1).strip()
+    raw = raw.replace("\\r\\n", "\n").replace("\\n", "\n")
+    raw = raw.splitlines()[0].strip()
+    if not raw or raw.startswith("["):
+        return None
+    return raw
+
+
+def _parse_meaning(body: str) -> str:
+    return _extract_signature_field(body, "Meaning of Signature") or ""
+
+
+def _parse_roles(body: str) -> list[str]:
+    raw = _extract_signature_field(body, "Signer Roles") or ""
+    if not raw:
+        return []
+    return [part.strip() for part in re.split(r"[;,]", raw) if part.strip()]
+
+
+def _parse_required_signatures(body: str) -> int:
+    raw = _extract_signature_field(body, "Required Signatures") or ""
+    if not raw:
+        return 1
+    try:
+        value = int(raw)
+    except ValueError:
+        return 1
+    return value if value > 0 else 1
+
+
+def _is_dependency_update_path(path: str) -> bool:
+    """True for dependency manifests/lockfiles Dependabot is allowed to update."""
+    return (
+        path in DEPENDENCY_UPDATE_FILENAMES
+        or path.rsplit("/", 1)[-1] in DEPENDENCY_UPDATE_FILENAMES
+        or (
+            path.startswith(".github/workflows/")
+            and path.lower().endswith((".yml", ".yaml"))
+        )
+        or DEPENDENCY_UPDATE_PATH_RE.search(path) is not None
+    )
+
+
+def _is_dependabot_dependency_update(author_key: str, paths: list[str]) -> bool:
+    return author_key in DEPENDABOT_LOGINS and bool(paths) and all(
+        _is_dependency_update_path(path) for path in paths
+    )
+
+
+def _strip_yaml_quotes(value: str) -> str:
+    stripped = value.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}:
+        return stripped[1:-1]
+    return stripped
+
+
+def _load_training_matrix(path: Path) -> dict[str, Any]:
+    users: dict[str, dict[str, str]] = {}
+    roles: dict[str, dict[str, list[str]]] = {}
+
+    section = ""
+    current_user = ""
+    current_role = ""
+    in_role_users = False
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.rstrip()
+        if not line or line.lstrip().startswith("#"):
+            continue
+
+        indent = len(line) - len(line.lstrip(" "))
+        stripped = line.strip()
+
+        if indent == 0 and stripped == "users:":
+            section = "users"
+            current_user = ""
+            current_role = ""
+            in_role_users = False
+            continue
+        if indent == 0 and stripped == "roles:":
+            section = "roles"
+            current_user = ""
+            current_role = ""
+            in_role_users = False
+            continue
+
+        if section == "users":
+            if indent == 2 and stripped.endswith(":"):
+                current_user = stripped[:-1]
+                users.setdefault(current_user, {})
+                continue
+            if current_user and indent == 4 and stripped.startswith("job_title:"):
+                _, value = stripped.split(":", 1)
+                users[current_user]["job_title"] = _strip_yaml_quotes(value)
+                continue
+
+        if section == "roles":
+            if indent == 2 and stripped.endswith(":"):
+                current_role = stripped[:-1]
+                roles.setdefault(current_role, {"users": []})
+                in_role_users = False
+                continue
+            if current_role and indent == 4 and stripped == "users:":
+                in_role_users = True
+                continue
+            if current_role and indent == 4 and stripped.endswith(":") and stripped != "users:":
+                in_role_users = False
+                continue
+            if current_role and in_role_users and indent == 6 and stripped.startswith("- "):
+                roles[current_role]["users"].append(_strip_yaml_quotes(stripped[2:]))
+
+    return {"users": users, "roles": roles}
+
+
+def _load_front_matter_roles(repo_root: Path, relative_path: str) -> list[str]:
+    path = repo_root / relative_path
+    if not path.exists() or not path.is_file():
+        return []
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---\n"):
+        return []
+    end_index = text.find("\n---\n", 4)
+    if end_index == -1:
+        return []
+    front_matter = text[4:end_index]
+    roles: list[str] = []
+    for key in ("owner_role", "approver_role"):
+        match = re.search(rf"^{key}:\s*(.+)$", front_matter, flags=re.MULTILINE)
+        value = _strip_yaml_quotes(match.group(1)) if match else ""
+        if value:
+            roles.append(value)
+    return roles
+
+
+def _qualifies_for_role(role_id: str, author_role_ids: set[str], author_job_title: str) -> bool:
+    if role_id in author_role_ids:
+        return True
+    return role_id == "management_representative" and _normalize_label(author_job_title) == _normalize_label(
+        _display_name_for_role(role_id)
+    )
+
+
+def _matches_role_sequence(actual_roles: list[str], expected_roles: list[str]) -> bool:
+    return [_normalize_label(role) for role in actual_roles] == [_normalize_label(role) for role in expected_roles]
+
+
+def _match_role_slots(
+    role_id_sequence: list[str],
+    role_members_lower_by_id: dict[str, set[str]],
+    author_key: str,
+    approver_keys: list[str],
+    required_reviewer_signatures: int,
+) -> dict[str, Any]:
+    """Mirror .github/scripts/role-coverage.js for resolver-time sanity checks."""
+    slots = list(role_id_sequence)
+    author = str(author_key or "").lower()
+    approvers = sorted(
+        {
+            str(key or "").lower()
+            for key in approver_keys
+            if str(key or "").lower() and str(key or "").lower() != author
+        }
+    )
+    allow_author = bool(author) and len(slots) - required_reviewer_signatures >= 1
+    author_node = "\0author"
+    signer_nodes = [*approvers, author_node] if allow_author else list(approvers)
+
+    def qualifies(signer: str, role_id: str) -> bool:
+        who = author if signer == author_node else signer
+        return who in role_members_lower_by_id.get(role_id, set())
+
+    slot_of_signer: dict[str, int] = {}
+
+    def augment(slot_idx: int, visited: set[str]) -> bool:
+        for signer in signer_nodes:
+            if signer in visited or not qualifies(signer, slots[slot_idx]):
+                continue
+            visited.add(signer)
+            held = slot_of_signer.get(signer)
+            if held is None or augment(held, visited):
+                slot_of_signer[signer] = slot_idx
+                return True
+        return False
+
+    for idx in range(len(slots)):
+        augment(idx, set())
+
+    assignment: dict[int, str] = {}
+    author_role_id: str | None = None
+    for signer, slot_idx in slot_of_signer.items():
+        assignment[slot_idx] = author if signer == author_node else signer
+        if signer == author_node:
+            author_role_id = slots[slot_idx]
+
+    matched = set(assignment)
+    return {
+        "covered": len(matched) == len(slots),
+        "author_role_id": author_role_id,
+        "assignment": assignment,
+        "missing_role_ids": [role_id for idx, role_id in enumerate(slots) if idx not in matched],
+    }
+
+
+def _infer_content_signature_policy(paths: list[str]) -> dict[str, Any] | None:
+    if any(path.startswith(("qm/", "sops/")) and path.lower().endswith(".md") for path in paths):
+        return {
+            "meaning": CONTROLLED_DOCUMENT_SIGNATURE_MEANING,
+            "roles": list(CONTROLLED_DOCUMENT_SIGNER_ROLES),
+            "required_signatures": CONTROLLED_DOCUMENT_REQUIRED_SIGNATURES,
+            "reason": "controlled QM/SOP document changes",
+        }
+    return None
+
+
+def _infer_role_candidates(repo_root: Path, paths: list[str]) -> tuple[list[str], list[str]]:
+    candidates: list[str] = []
+    reasons: list[str] = []
+
+    def add_candidate(role_id: str, reason: str) -> None:
+        if role_id not in candidates:
+            candidates.append(role_id)
+        if reason not in reasons:
+            reasons.append(reason)
+
+    if any(path.startswith(TECHNICAL_QMS_MAINTAINER_PREFIXES) for path in paths):
+        add_candidate("technical_qms_maintainer", "repository tooling/policy changes")
+
+    controlled_doc_paths = [
+        path
+        for path in paths
+        if path.startswith(CONTROLLED_DOC_PREFIXES) and path.lower().endswith(".md")
+    ]
+    controlled_doc_roles: list[str] = []
+    for relative_path in controlled_doc_paths:
+        for role_id in _load_front_matter_roles(repo_root, relative_path):
+            if role_id not in controlled_doc_roles:
+                controlled_doc_roles.append(role_id)
+    for role_id in controlled_doc_roles:
+        add_candidate(role_id, "controlled document metadata")
+
+    if any(path.startswith("matrices/") for path in paths):
+        add_candidate("management_representative", "matrix/role changes")
+
+    if any(path.startswith(EXECUTION_RECORD_PREFIX) for path in paths):
+        if "execution record changes" not in reasons:
+            reasons.append("execution record changes")
+
+    return candidates, reasons
+
+
+def _write_outputs(outputs: dict[str, str], github_output_path: str | None) -> None:
+    if not github_output_path:
+        return
+    with Path(github_output_path).open("a", encoding="utf-8") as fh:
+        for key, value in outputs.items():
+            fh.write(f"{key}={value}\n")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--repo-root", default=".")
+    parser.add_argument("--author", required=True)
+    parser.add_argument("--body-base64", required=True)
+    parser.add_argument("--paths-json", required=True)
+    parser.add_argument("--github-output")
+    args = parser.parse_args()
+
+    repo_root = Path(args.repo_root).resolve()
+    training_matrix = _load_training_matrix(repo_root / "matrices" / "training_matrix.yml")
+    users = training_matrix.get("users", {}) or {}
+    roles = training_matrix.get("roles", {}) or {}
+
+    author = args.author.strip()
+    author_key = author.lower()
+    is_automation_author = author_key in AUTOMATION_BOT_LOGINS
+    author_profile = next(
+        (profile for login, profile in users.items() if str(login).strip().lower() == author_key),
+        {},
+    )
+    author_job_title = str((author_profile or {}).get("job_title") or "").strip()
+    author_role_ids = [
+        role_id
+        for role_id, role_data in roles.items()
+        if any(str(user).strip().lower() == author_key for user in (role_data.get("users", []) or []))
+    ]
+    author_role_id_set = set(author_role_ids)
+
+    try:
+        body = base64.b64decode(args.body_base64.encode("utf-8")).decode("utf-8")
+    except Exception as exc:  # pragma: no cover - defensive decoding path
+        raise SystemExit(f"Could not decode PR body: {exc}") from exc
+
+    try:
+        paths = json.loads(args.paths_json)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Could not parse changed paths JSON: {exc}") from exc
+    if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
+        raise SystemExit("Changed paths must be a JSON array of strings.")
+    changed_paths = [str(path) for path in paths]
+
+    explicit_roles = _parse_roles(body)
+    explicit_meaning = _parse_meaning(body)
+    required_signatures = _parse_required_signatures(body)
+    inferred_role_candidates, inference_reasons = _infer_role_candidates(repo_root, changed_paths)
+    eligible_inferred_roles = [
+        role_id
+        for role_id in inferred_role_candidates
+        if _qualifies_for_role(role_id, author_role_id_set, author_job_title)
+    ]
+    content_policy = _infer_content_signature_policy(changed_paths)
+
+    if _is_dependabot_dependency_update(author_key, changed_paths):
+        final_roles = list(DEPENDABOT_SIGNER_ROLES)
+        required_signatures = DEPENDABOT_REQUIRED_SIGNATURES
+        meaning_of_signature = DEPENDABOT_SIGNATURE_MEANING
+        source = "dependabot"
+        signature_word = "signature" if required_signatures == 1 else "signatures"
+        summary = (
+            "Applied the fixed signature policy for Dependabot dependency updates: "
+            f"{'; '.join(final_roles)} with {required_signatures} required {signature_word}."
+        )
+    elif content_policy:
+        expected_meaning = str(content_policy["meaning"])
+        expected_roles = list(content_policy["roles"])
+        expected_required_signatures = int(content_policy["required_signatures"])
+        expected_primary_role_id = _role_id_for_label(expected_roles[0])
+        if expected_primary_role_id and not _qualifies_for_role(
+            expected_primary_role_id, author_role_id_set, author_job_title
+        ):
+            raise SystemExit(
+                f"PRs touching QM/SOP controlled documents require the author to be eligible for "
+                f"primary signer role '{expected_roles[0]}'. Author @{author} is not."
+            )
+        if explicit_meaning != expected_meaning:
+            raise SystemExit(
+                "PRs touching QM/SOP controlled documents must declare "
+                f"'**Meaning of Signature:** {expected_meaning}'."
+            )
+        if not _matches_role_sequence(explicit_roles, expected_roles):
+            raise SystemExit(
+                "PRs touching QM/SOP controlled documents must declare "
+                f"'**Signer Roles:** {'; '.join(expected_roles)}'."
+            )
+        if required_signatures != expected_required_signatures:
+            raise SystemExit(
+                "PRs touching QM/SOP controlled documents must declare "
+                f"'**Required Signatures:** {expected_required_signatures}'."
+            )
+        final_roles = expected_roles
+        required_signatures = expected_required_signatures
+        meaning_of_signature = expected_meaning
+        source = "content_policy"
+        summary = (
+            f"Applied the fixed signature policy for {content_policy['reason']}: "
+            f"{'; '.join(expected_roles)} with {expected_required_signatures} required signatures."
+        )
+    elif explicit_roles:
+        if len(explicit_roles) != required_signatures:
+            raise SystemExit(
+                f"Explicit signer roles count ({len(explicit_roles)}) must match required signatures ({required_signatures})."
+            )
+        # Declaration ORDER no longer determines which role the author covers:
+        # the shared matcher (.github/scripts/role-coverage.js, used by the 1.2
+        # merge gate and the 2.1 signature request) lets a qualifying author
+        # flexibly cover whichever declared role the reviewers did not. So the
+        # former "first listed '**Signer Roles:**' entry is the author's role"
+        # eligibility error is gone — it wrongly blocked PRs where the author
+        # qualified for a non-first declared role.
+        final_roles = explicit_roles
+        meaning_of_signature = explicit_meaning or DEFAULT_SIGNATURE_MEANING
+        source = "explicit"
+        summary = "Using explicit signer roles from the PR body."
+        if is_automation_author:
+            summary += " Automation-bot author detected; all explicit signer roles will be assigned to approved reviewers."
+    else:
+        if required_signatures != 1:
+            raise SystemExit(
+                "PRs requiring multiple signatures must declare explicit '**Signer Roles:**' in the PR body."
+            )
+        if is_automation_author:
+            raise SystemExit(
+                f"Automation-authored PR @{author} must declare explicit '**Meaning of Signature:**', "
+                "'**Signer Roles:**', and '**Required Signatures:**' in the PR body."
+            )
+        if len(eligible_inferred_roles) == 1:
+            final_roles = [_display_name_for_role(eligible_inferred_roles[0])]
+            meaning_of_signature = explicit_meaning or DEFAULT_SIGNATURE_MEANING
+            source = "inferred"
+            summary = (
+                f"Inferred signer role '{final_roles[0]}' from {', '.join(inference_reasons) or 'PR content'} "
+                f"and author role set."
+            )
+        elif len(eligible_inferred_roles) > 1:
+            display_roles = ", ".join(_display_name_for_role(role_id) for role_id in eligible_inferred_roles)
+            raise SystemExit(
+                f"Signer role is ambiguous for @{author}. Eligible inferred roles: {display_roles}. "
+                "Declare '**Signer Roles:**' explicitly in the PR body."
+            )
+        else:
+            display_roles = ", ".join(_display_name_for_role(role_id) for role_id in inferred_role_candidates)
+            author_roles = ", ".join(_display_name_for_role(role_id) for role_id in author_role_ids)
+            detail = f" Candidate content roles: {display_roles}." if display_roles else ""
+            raise SystemExit(
+                f"Could not infer a signer role for @{author} from the changed content and author role set.{detail} "
+                f"Author roles: {author_roles or 'none resolved'}. Declare '**Signer Roles:**' explicitly in the PR body."
+            )
+
+    final_role_ids: list[str] = []
+    for display in final_roles:
+        role_id = _role_id_for_label(display)
+        if role_id and role_id not in final_role_ids:
+            final_role_ids.append(role_id)
+
+    # Role-coverage data for order-independent signer-role matching
+    # (.github/scripts/role-coverage.js, consumed by the 1.2 merge gate and the
+    # 2.1 attestation). `final_role_id_sequence` preserves declaration order AND
+    # duplicates (so "QA Lead; QA Lead" demands two QA signers);
+    # `role_members_lowercased_by_id` is the per-declared-role qualifying set
+    # (lowercased for case-insensitive JS lookup); `reviewer_candidates_by_role`
+    # is the non-author pool per role for reviewer assignment.
+    final_role_id_sequence: list[str] = []
+    for display in final_roles:
+        role_id = _role_id_for_label(display)
+        if role_id:
+            final_role_id_sequence.append(role_id)
+    role_members_lower_by_id_sets: dict[str, set[str]] = {
+        role_id: {
+            str(u).strip().lower()
+            for u in (roles.get(role_id, {}).get("users", []) or [])
+            if str(u).strip()
+        }
+        for role_id in final_role_ids
+    }
+    role_members_lower_by_id = {
+        role_id: sorted(members)
+        for role_id, members in role_members_lower_by_id_sets.items()
+    }
+    author_eligible_role_ids: list[str] = []
+    if not is_automation_author:
+        author_eligible_role_ids = [
+            role_id for role_id in final_role_ids if author_key in role_members_lower_by_id_sets.get(role_id, set())
+        ]
+        if source == "explicit" and not author_eligible_role_ids:
+            labels = ", ".join(final_roles)
+            raise SystemExit(
+                f"PR author @{args.author} is not eligible for any declared signer role: {labels}. "
+                "Signer roles are order-independent, but a human-authored PR with an explicit "
+                "Signature Requirements block must declare at least one role that the author can sign."
+            )
+
+    reviewer_candidates_by_role: dict[str, list[str]] = {}
+    for role_id in final_role_ids:
+        pool: list[str] = []
+        seen_keys: set[str] = set()
+        for user in roles.get(role_id, {}).get("users", []) or []:
+            login = str(user).strip().lstrip("@")
+            key = login.lower()
+            if not login or key == author_key or key == "replace_with_gh_username" or key in seen_keys:
+                continue
+            seen_keys.add(key)
+            pool.append(login)
+        reviewer_candidates_by_role[role_id] = pool
+
+    all_candidate_keys = sorted(
+        {
+            login.lower()
+            for pool in reviewer_candidates_by_role.values()
+            for login in pool
+            if login
+        }
+    )
+    coverage = _match_role_slots(
+        final_role_id_sequence,
+        role_members_lower_by_id_sets,
+        "" if is_automation_author else author_key,
+        all_candidate_keys,
+        required_signatures if is_automation_author else max(0, required_signatures - 1),
+    )
+    if not coverage["covered"]:
+        raise SystemExit(
+            "Insufficient reviewer candidates for declared signer role(s): "
+            + ", ".join(coverage["missing_role_ids"])
+            + ". Either add eligible users to those roles in "
+            "matrices/training_matrix.yml, or change the PR's "
+            "'**Signer Roles:**' declaration to roles with available signers."
+        )
+
+    outputs = {
+        "signatory_roles": "; ".join(final_roles),
+        "signatory_roles_json": json.dumps(final_roles),
+        "signatory_role_ids": ",".join(final_role_ids),
+        "signatory_role_ids_json": json.dumps(final_role_ids),
+        "signatory_role_id_sequence_json": json.dumps(final_role_id_sequence),
+        "role_members_lowercased_by_id_json": json.dumps(role_members_lower_by_id),
+        "author_signed_role_id": "",
+        "author_eligible_role_ids": ",".join(author_eligible_role_ids),
+        "author_eligible_role_ids_json": json.dumps(author_eligible_role_ids),
+        "reviewer_candidates_by_role_json": json.dumps(reviewer_candidates_by_role),
+        "meaning_of_signature": meaning_of_signature,
+        "required_signatures": str(required_signatures),
+        "required_reviewer_signatures": str(required_signatures if is_automation_author else max(0, required_signatures - 1)),
+        "role_resolution_source": source,
+        "role_resolution_summary": summary,
+        "author_role_ids": ",".join(author_role_ids),
+        "author_job_title": author_job_title,
+        "author_is_automation_bot": "true" if is_automation_author else "false",
+        "inferred_role_candidates": ",".join(inferred_role_candidates),
+        "inference_reasons": "; ".join(inference_reasons),
+    }
+    _write_outputs(outputs, args.github_output)
+    print(json.dumps(outputs, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

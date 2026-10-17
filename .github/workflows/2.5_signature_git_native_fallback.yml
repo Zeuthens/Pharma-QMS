@@ -1,0 +1,448 @@
+# Modified by Zeuthen, 2026-10-17
+name: 2.5 Manual Signature Attestation Fallback
+run-name: 2.5 Manual Signature Fallback
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number to sign"
+        required: true
+      signer_full_name:
+        description: "Type your full legal name exactly as your signature assertion"
+        required: true
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+  id-token: write
+
+env:
+  UPLOAD_ATTESTATION_ARTIFACT: "false"
+
+jobs:
+  sign_and_attest:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub App token for signature processing
+        id: app_token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.QMS_BOT_APP_ID }}
+          private-key: ${{ secrets.QMS_BOT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+
+      - name: Resolve signature inputs
+        id: siginput
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ steps.app_token.outputs.token }}
+          script: |
+            const prNumber = Number.parseInt(`${{ github.event.inputs.pr_number }}`, 10);
+            const signerFullName = `${{ github.event.inputs.signer_full_name }}`.trim();
+            const meaning = '';
+            const signerRole = '';
+            const authMethod = 'GitHub App workflow dispatch';
+            const mfaAssertion = '';
+            if (!Number.isInteger(prNumber) || prNumber < 1) {
+              core.setFailed('pr_number must resolve to a positive integer.');
+              return;
+            }
+            if (!signerFullName) {
+              core.setFailed('signer_full_name is required for workflow_dispatch signatures.');
+              return;
+            }
+
+            core.setOutput('pr_number', String(prNumber));
+            core.setOutput('meaning', meaning);
+            core.setOutput('signer_role', signerRole);
+            core.setOutput('auth_method', authMethod);
+            core.setOutput('mfa_assertion', mfaAssertion || '');
+            core.setOutput('signer_full_name', signerFullName || '');
+
+      - name: Resolve PR and target hash
+        id: pr
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ steps.app_token.outputs.token }}
+          script: |
+            const crypto = require('crypto');
+            const inputMeaning = (process.env.INPUT_MEANING || '').trim();
+            const inputSignerRole = (process.env.INPUT_SIGNER_ROLE || '').trim();
+
+            const prNumber = Number.parseInt(process.env.PR_NUMBER, 10);
+            const res = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            const pr = res.data;
+            if (pr.state !== 'closed') {
+              core.setFailed(`PR #${prNumber} must be closed before attestation. Current state: ${pr.state}`);
+              return;
+            }
+
+            const requestedReviewers = (pr.requested_reviewers || [])
+              .map((r) => (r.login || '').toLowerCase())
+              .filter(Boolean);
+            const reviews = await github.paginate(github.rest.pulls.listReviews, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              per_page: 100,
+            });
+            const latestReviewByUser = new Map();
+            for (const review of reviews) {
+              const login = (review.user?.login || '').trim();
+              if (!login) continue;
+              latestReviewByUser.set(login.toLowerCase(), {
+                state: String(review.state || '').toUpperCase(),
+                commitId: String(review.commit_id || '').toLowerCase(),
+              });
+            }
+            const currentHeadSha = String(pr.head?.sha || '').toLowerCase();
+            const approvedOnHead = Array.from(latestReviewByUser.entries())
+              .filter(([, review]) => review.state === 'APPROVED' && review.commitId === currentHeadSha)
+              .map(([login]) => login);
+            const approvedOnHeadSet = new Set(approvedOnHead);
+
+            let allowedSigners = [];
+            if (pr.merged) {
+              const prBody = pr.body || '';
+              // Last-match semantics mirror scripts/resolve_signature_policy.py
+              // (`_extract_signature_field`). See
+              // 2.1_pr_signature_request_gate.yml for the same rationale.
+              const sigMatch = [...prBody.matchAll(/\*\*Required Signatures:\*\*\s*([^\n]+)/gi)].pop() || null;
+              let requiredSignatures = sigMatch ? Number.parseInt(sigMatch[1].trim(), 10) : 1;
+              if (!Number.isInteger(requiredSignatures) || requiredSignatures < 1) {
+                requiredSignatures = 1;
+              }
+              const requiredReviewerSignatures = Math.max(0, requiredSignatures - 1);
+              const authorLogin = (pr.user?.login || '').toLowerCase();
+              if (!authorLogin) {
+                core.setFailed(`PR #${prNumber} author could not be resolved for Part 11 signer eligibility.`);
+                return;
+              }
+              if (requiredReviewerSignatures > 0 && approvedOnHead.length === 0) {
+                core.setFailed(
+                  `PR #${prNumber} requires reviewer signatures, but has no valid approval on current head commit ${currentHeadSha || '(unknown)'}. Signature generation is blocked.`
+                );
+                return;
+              }
+
+              const marker = '<!-- signature-auto-reviewers -->';
+              const legacyMarker = '<!-- part11-auto-reviewers -->';
+              const automationBotLogins = new Set(['zeuthen-pharma-qms-bot', 'zeuthen-pharma-qms-bot[bot]', 'github-actions[bot]']);
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                per_page: 100,
+              });
+              const markerComments = comments
+                .filter((c) => ((c.body || '').includes(marker) || (c.body || '').includes(legacyMarker)) && automationBotLogins.has(String(c.user?.login || '').toLowerCase()))
+                .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+              const assignedReviewers = markerComments.length > 0
+                ? (() => {
+                    const latestBody = markerComments[markerComments.length - 1].body || '';
+                    const lineMatch = latestBody.match(/Assigned reviewers:\s*([^\n]+)/i);
+                    return lineMatch
+                      ? Array.from((lineMatch[1] || '').matchAll(/@([A-Za-z0-9-]+)/g)).map((m) => m[1].toLowerCase())
+                      : [];
+                  })()
+                : [];
+
+              let reviewerPool = Array.from(
+                new Set([
+                  ...assignedReviewers,
+                  ...requestedReviewers,
+                ])
+              );
+              if (reviewerPool.length === 0) {
+                reviewerPool = approvedOnHead;
+              }
+              if (reviewerPool.length < requiredReviewerSignatures) {
+                core.setFailed(
+                  `PR #${prNumber} requires ${requiredReviewerSignatures} reviewer signature(s) (author auto-signs 1), but only ${reviewerPool.length} reviewer candidate(s) were resolved.`
+                );
+                return;
+              }
+              const approvedFromPool = reviewerPool.filter((login) => approvedOnHeadSet.has(login.toLowerCase()));
+              if (approvedFromPool.length < requiredReviewerSignatures) {
+                core.setFailed(
+                  `PR #${prNumber} requires ${requiredReviewerSignatures} reviewer signature(s) (author auto-signs 1), but only ${approvedFromPool.length} reviewer candidate(s) approved.`
+                );
+                return;
+              }
+              allowedSigners = [authorLogin, ...approvedFromPool.slice(0, requiredReviewerSignatures)];
+            } else {
+              if (approvedOnHead.length === 0) {
+                core.setFailed(
+                  `PR #${prNumber} has no valid approval on current head commit ${currentHeadSha || '(unknown)'}. Signature generation is blocked.`
+                );
+                return;
+              }
+              const approvedRequested = requestedReviewers.filter((login) => approvedOnHeadSet.has(login));
+              allowedSigners = approvedRequested.length > 0 ? approvedRequested : approvedOnHead;
+              if (allowedSigners.length === 0) {
+                core.setFailed(`PR #${prNumber} has no approved reviewers eligible to sign yet.`);
+                return;
+              }
+            }
+
+            const actor = (context.actor || '').toLowerCase();
+            if (!allowedSigners.includes(actor)) {
+              core.setFailed(
+                `@${context.actor} is not an eligible signer for PR #${prNumber}. Eligible signers: ${allowedSigners.map((x) => '@' + x).join(', ')}`
+              );
+              return;
+            }
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+            const requestComments = comments
+              .filter((c) => {
+                const body = c.body || '';
+                return body.includes('<!-- signature-native-signature-request -->') || body.includes('<!-- part11-native-signature-request -->');
+              })
+              .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+            if (requestComments.length === 0) {
+              core.setFailed(`No Part 11 signature request comment found on PR #${prNumber}.`);
+              return;
+            }
+
+            const latestRequestBody = requestComments[requestComments.length - 1].body || '';
+            const meaningMatch = latestRequestBody.match(/Meaning of signature:\s*\*\*([^*]+)\*\*/i)
+              || latestRequestBody.match(/Meaning of signature:\s*`([^`]+)`/i);
+            const requestMeaning = meaningMatch ? meaningMatch[1].trim() : '';
+            const rolesMatch = latestRequestBody.match(/Designated signatory role\(s\):\s*\*\*([^*]+)\*\*/i)
+              || latestRequestBody.match(/Signer role\(s\):\s*`([^`]+)`/i);
+            const requestRoles = rolesMatch
+              ? rolesMatch[1].split(/[;,]/).map((x) => x.trim()).filter(Boolean)
+              : [];
+            const eligibleMatch = latestRequestBody.match(/Eligible signers:\s*\*\*([^*]+)\*\*/i);
+            const requestEligibleSigners = eligibleMatch
+              ? Array.from((eligibleMatch[1] || '').matchAll(/@([A-Za-z0-9-]+)/g)).map((m) => m[1].toLowerCase())
+              : [];
+
+            const resolvedMeaning = inputMeaning || requestMeaning;
+            if (!resolvedMeaning) {
+              core.setFailed(`Could not resolve meaning_of_signature for PR #${prNumber}.`);
+              return;
+            }
+            if (inputMeaning && requestMeaning && inputMeaning !== requestMeaning) {
+              core.setFailed(
+                `meaning_of_signature mismatch. Input='${inputMeaning}' request='${requestMeaning}'.`
+              );
+              return;
+            }
+
+            let resolvedSignerRole = inputSignerRole;
+            if (!resolvedSignerRole) {
+              const actorIndex = requestEligibleSigners.length > 0
+                ? requestEligibleSigners.findIndex((x) => x.toLowerCase() === actor.toLowerCase())
+                : allowedSigners.findIndex((x) => x.toLowerCase() === actor.toLowerCase());
+              resolvedSignerRole = (actorIndex >= 0 ? requestRoles[actorIndex] : '') || requestRoles[0] || '';
+            }
+            if (!resolvedSignerRole) {
+              core.setFailed(`Could not resolve signer role for @${context.actor} on PR #${prNumber}.`);
+              return;
+            }
+            if (requestRoles.length > 0 && !requestRoles.map((x) => x.toLowerCase()).includes(resolvedSignerRole.toLowerCase())) {
+              core.setFailed(
+                `Resolved signer role '${resolvedSignerRole}' is not in requested roles: ${requestRoles.join(', ')}.`
+              );
+              return;
+            }
+
+            const targetCommit = pr.merge_commit_sha || pr.head.sha;
+            const repoFull = `${context.repo.owner}/${context.repo.repo}`;
+            const targetHash = crypto.createHash('sha256').update(`${repoFull}:${targetCommit}`).digest('hex');
+
+            core.setOutput('pr_number', String(pr.number));
+            core.setOutput('pr_url', pr.html_url);
+            core.setOutput('pr_title', pr.title || '');
+            core.setOutput('target_commit', targetCommit);
+            core.setOutput('target_hash', targetHash);
+            core.setOutput('repo_full', repoFull);
+            core.setOutput('actor_login', context.actor);
+            core.setOutput('actor_id', String(context.payload.sender?.id || '0'));
+            core.setOutput('allowed_signers_csv', allowedSigners.join(','));
+            core.setOutput('meaning_of_signature', resolvedMeaning);
+            core.setOutput('signer_role', resolvedSignerRole);
+            core.setOutput('auth_method', process.env.INPUT_AUTH_METHOD || 'GitHub App workflow dispatch');
+            core.setOutput('request_comment_id', String(requestComments[requestComments.length - 1].id || ''));
+            core.setOutput('request_comment_url', String(requestComments[requestComments.length - 1].html_url || ''));
+            core.setOutput('request_roles_csv', requestRoles.join(';'));
+        env:
+          PR_NUMBER: ${{ steps.siginput.outputs.pr_number }}
+          INPUT_MEANING: ${{ steps.siginput.outputs.meaning }}
+          INPUT_SIGNER_ROLE: ${{ steps.siginput.outputs.signer_role }}
+          INPUT_AUTH_METHOD: ${{ steps.siginput.outputs.auth_method }}
+
+      - name: Build attestation manifest
+        uses: actions/github-script@v8
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+          PR_URL: ${{ steps.pr.outputs.pr_url }}
+          PR_TITLE: ${{ steps.pr.outputs.pr_title }}
+          TARGET_COMMIT: ${{ steps.pr.outputs.target_commit }}
+          TARGET_HASH: ${{ steps.pr.outputs.target_hash }}
+          REPO_FULL: ${{ steps.pr.outputs.repo_full }}
+          ACTOR_LOGIN: ${{ steps.pr.outputs.actor_login }}
+          ACTOR_ID: ${{ steps.pr.outputs.actor_id }}
+          MEANING: ${{ steps.pr.outputs.meaning_of_signature }}
+          SIGNER_ROLE: ${{ steps.pr.outputs.signer_role }}
+          AUTH_METHOD: ${{ steps.pr.outputs.auth_method }}
+          MFA_ASSERTION: ${{ steps.siginput.outputs.mfa_assertion }}
+          SIGNER_FULL_NAME_ASSERTION: ${{ steps.siginput.outputs.signer_full_name }}
+          REQUEST_COMMENT_ID: ${{ steps.pr.outputs.request_comment_id }}
+          REQUEST_COMMENT_URL: ${{ steps.pr.outputs.request_comment_url }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SERVER_URL: ${{ github.server_url }}
+          WORKFLOW: ${{ github.workflow }}
+        with:
+          github-token: ${{ steps.app_token.outputs.token }}
+          script: |
+            const fs = require('fs');
+            const crypto = require('crypto');
+            const registryPath = 'matrices/signer_registry.json';
+
+            let registry = {};
+            if (fs.existsSync(registryPath)) {
+              try {
+                registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+              } catch (error) {
+                core.warning(`Could not parse ${registryPath}: ${error.message}`);
+              }
+            }
+            const registryKey = (process.env.ACTOR_LOGIN || '').toLowerCase();
+            const profile = Object.entries(registry).find(([login]) => login.toLowerCase() === registryKey)?.[1] || {};
+            const assertedName = String(process.env.SIGNER_FULL_NAME_ASSERTION || '').trim();
+            const expectedName = String(profile.full_name || '').trim();
+            const normalizeName = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+            if (assertedName && expectedName && normalizeName(assertedName) !== normalizeName(expectedName)) {
+              core.setFailed(
+                `Submitted full name '${assertedName}' does not match signer registry for @${process.env.ACTOR_LOGIN} ('${expectedName}').`
+              );
+              return;
+            }
+            const signerFullName = assertedName || expectedName || process.env.ACTOR_LOGIN;
+            const signerJobTitle = String(profile.job_title || '').trim() || process.env.SIGNER_ROLE;
+
+            const payload = {
+              schema_version: 1,
+              attestation_type: 'part11_git_native_pr_signature',
+              repository: process.env.REPO_FULL,
+              pr_number: Number(process.env.PR_NUMBER),
+              pr_url: process.env.PR_URL,
+              pr_title: process.env.PR_TITLE,
+              target_commit: process.env.TARGET_COMMIT,
+              target_hash: process.env.TARGET_HASH,
+              meaning_of_signature: process.env.MEANING,
+              signer_role: process.env.SIGNER_ROLE,
+              signer_full_name: signerFullName,
+              signer_job_title: signerJobTitle,
+              actor_login: process.env.ACTOR_LOGIN,
+              actor_id: Number(process.env.ACTOR_ID || '0'),
+              timestamp_utc: new Date().toISOString(),
+              authentication_assertion: {
+                method: process.env.AUTH_METHOD,
+                mfa_assertion: process.env.MFA_ASSERTION || 'not_provided',
+                signer_full_name_asserted: assertedName || 'not_provided',
+              },
+              part11_request_comment: {
+                id: Number(process.env.REQUEST_COMMENT_ID || '0'),
+                url: process.env.REQUEST_COMMENT_URL || '',
+              },
+              workflow_run: {
+                id: Number(process.env.RUN_ID),
+                attempt: Number(process.env.RUN_ATTEMPT),
+                workflow: process.env.WORKFLOW,
+                url: `${process.env.SERVER_URL}/${process.env.REPO_FULL}/actions/runs/${process.env.RUN_ID}`,
+              },
+            };
+
+            const serialized = `${JSON.stringify(payload, null, 2)}\n`;
+            const sha = crypto.createHash('sha256').update(serialized, 'utf8').digest('hex');
+            payload.attestation_sha256 = sha;
+
+            fs.writeFileSync('signed_attestation.json', `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Keyless sign attestation manifest
+        env:
+          COSIGN_YES: "true"
+        run: |
+          cosign sign-blob \
+            --yes \
+            --output-signature signed_attestation.sig \
+            --output-certificate signed_attestation.pem \
+            signed_attestation.json
+
+      - name: Upload attestation package
+        if: env.UPLOAD_ATTESTATION_ARTIFACT == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@v6
+        with:
+          name: signature-native-attestation-pr${{ steps.pr.outputs.pr_number }}-${{ github.run_id }}
+          path: |
+            signed_attestation.json
+            signed_attestation.sig
+            signed_attestation.pem
+          if-no-files-found: error
+          retention-days: 5
+
+      - name: Post attestation comment to PR
+        uses: actions/github-script@v8
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+          TARGET_HASH: ${{ steps.pr.outputs.target_hash }}
+          ARTIFACT_NAME: signature-native-attestation-pr${{ steps.pr.outputs.pr_number }}-${{ github.run_id }}
+          UPLOAD_ATTESTATION_ARTIFACT: ${{ env.UPLOAD_ATTESTATION_ARTIFACT }}
+        with:
+          github-token: ${{ steps.app_token.outputs.token }}
+          script: |
+            const fs = require('fs');
+            const prNumber = Number(process.env.PR_NUMBER);
+            const targetHash = process.env.TARGET_HASH;
+            const attestation = JSON.parse(fs.readFileSync('signed_attestation.json', 'utf8'));
+            const artifactLine = process.env.UPLOAD_ATTESTATION_ARTIFACT === 'true'
+              ? `Run artifact: \`${process.env.ARTIFACT_NAME}\``
+              : 'Run artifact: disabled (`UPLOAD_ATTESTATION_ARTIFACT=false`)';
+
+            const body = [
+              '<!-- signature-native-attestation -->',
+              '✅ Git-native signature recorded',
+              '',
+              `Target hash: \`${targetHash}\``,
+              `Signer: ${attestation.signer_full_name} (@${attestation.actor_login}, ID: ${attestation.actor_id})`,
+              `Signer title: \`${attestation.signer_job_title}\``,
+              `Signer role in workflow: \`${attestation.signer_role}\``,
+              `Meaning of signature: \`${attestation.meaning_of_signature}\``,
+              `Authentication assertion: \`${attestation.authentication_assertion?.method || 'n/a'}\``,
+              `Attestation SHA256: \`${attestation.attestation_sha256}\``,
+              artifactLine,
+              '',
+              '```json',
+              JSON.stringify(attestation, null, 2),
+              '```',
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body,
+            });

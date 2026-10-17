@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "tracked_baseline_file": "adoption/upstream-baseline.json",
+  "required_repo_variables": [
+    "SIGNATURE_UI_BASE_URL"
+  ],
+  "required_repo_secrets": [
+    "QMS_BOT_APP_ID",
+    "QMS_BOT_APP_PRIVATE_KEY"
+  ],
+  "placeholder_scan_paths": [
+    "matrices/company_profile.yml",
+    "matrices/regulatory_market_scope.yml",
+    "matrices/training_matrix.yml",
+    "matrices/signer_registry.json",
+    "matrices/qms_tooling_inventory.yml",
+    "records/suppliers/approved_supplier_list.yml"
+  ],
+  "placeholder_prefixes": [
+    "REPLACE_WITH_",
+    "TODO"
+  ],
+  "blockers": [
+    "SIGNATURE_UI_BASE_URL (signing endpoint) or an approved, validated fallback is required before training (3.2) and QMS-release (2.7) signatures can be captured; 2.5 covers merged-PR signatures only.",
+    "A second qualified signer must be added to matrices/signer_registry.json and matrices/training_matrix.yml before controlled changes to sops/, qm/, records/, matrices/ can be signed."
+  ]
+}

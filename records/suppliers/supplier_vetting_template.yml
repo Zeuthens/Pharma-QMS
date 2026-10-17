@@ -1,0 +1,61 @@
+template_version: 2
+record_type: supplier_vetting
+required_fields:
+  supplier_id: "SUP-XXXX"
+  supplier_name: ""
+  service_description: ""
+  criticality: "critical|major|minor"
+  criticality_rationale: ""
+  patient_safety_impact: "none|indirect|direct"
+  data_integrity_impact: "none|indirect|direct"
+  service_model: "cloud|software|consulting|testing|other"
+  jurisdictional_impact: []
+  personal_data_processing:
+    applicable: false
+    role: "none|controller|processor|subprocessor|joint_controller|independent_recipient|not_assessed"
+    processing_activity_reference: ""
+    categories_of_personal_data: []
+    sensitive_or_special_category_data_present: false
+    data_subject_categories: []
+    controller_or_customer_reference: ""
+    privacy_notice_or_transparency_reference: ""
+    dpa_or_privacy_terms_required: "yes|no|not_assessed"
+    dpa_or_privacy_terms_reference: ""
+    article_28_or_swiss_processor_terms_checked: false
+    subprocessor_authorization: "not_applicable|specific|general|not_assessed"
+    subprocessor_list_reference: ""
+    controller_assistance_obligations:
+      data_subject_rights: "covered|not_covered|not_applicable|not_assessed"
+      breach_notification: "covered|not_covered|not_applicable|not_assessed"
+      dpia_and_authority_consultation: "covered|not_covered|not_applicable|not_assessed"
+      deletion_or_return: "covered|not_covered|not_applicable|not_assessed"
+      audit_evidence: "covered|not_covered|not_applicable|not_assessed"
+    transfer_assessment_reference: ""
+  purchasing_controls:
+    agreement_basis: "quality_agreement|sla_tos_equivalent"
+    agreement_reference: ""
+    equivalence_rationale: ""
+  information_security_review:
+    status: "pending|approved|rejected"
+    reviewer: ""
+    review_date: "YYYY-MM-DD"
+  cloud_provider_review:
+    applicable: true
+    accepted_certifications:
+      - "ISO 27001"
+      - "SOC 2 Type II"
+    evidence_reference: ""
+    reviewer: ""
+    review_date: "YYYY-MM-DD"
+  business_continuity_review:
+    status: "pending|approved|rejected"
+    reviewer: ""
+    review_date: "YYYY-MM-DD"
+  compliance_history_review:
+    status: "pending|approved|rejected"
+    findings: []
+  approval:
+    decision: "pending|approved|rejected"
+    approver_role: "management_representative"
+    approved_on: "YYYY-MM-DD"
+  next_review_due: "YYYY-MM-DD"

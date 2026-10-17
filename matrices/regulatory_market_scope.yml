@@ -1,0 +1,49 @@
+version: 1
+scope_owner_role: management_representative
+last_reviewed_on: "TODO: set at QMS approval"
+product_qualification:
+  - product_id: "IMPD-AUTOMATION"
+    name: "IMPD automation"
+    repository: "Zeuthens/impd-automation"
+    medical_device: false
+    determination: "Not a medical device."
+    rationale: >-
+      IMPD automation drafts regulatory dossier content (Investigational Medicinal
+      Product Dossiers) for medicinal products on behalf of pharmaceutical
+      regulatory professionals. It has no medical purpose: it is not intended for
+      diagnosis, prevention, monitoring, prediction, prognosis, treatment, or
+      alleviation of disease or injury in individual patients, and it does not
+      process patient data to support clinical decisions. It therefore does not
+      meet the medical device software definition of Regulation (EU) 2017/745
+      Article 2(1).
+    confirmation_status: "TODO: confirm the non-device determination and record approval (SOP-005); re-assess under SOP-009 if any medical purpose or clinical claim is added."
+    escalation_rule: "If AI output is used for a medical purpose or the product makes a diagnostic or therapeutic claim, re-evaluate the adoption profile (escalate to the source baseline's ai_diagnostic profile) before release."
+jurisdictions:
+  - jurisdiction: "European Union (Denmark)"
+    confirmation_status: "TODO: confirm market scope (EU, Denmark)"
+    device_framework:
+      name: "Regulation (EU) 2017/745 on medical devices (MDR)"
+      citation: "Regulation (EU) 2017/745, Article 2(1)"
+      applicability: "not_applicable (non-device determination above)"
+      key_references:
+        - ref: "Regulation (EU) 2017/745, Article 2(1) - definition of medical device"
+          note: "Used only to record and justify the non-device determination."
+        - ref: "MDCG 2019-11 - Guidance on qualification and classification of software"
+          note: "Qualification reference for the non-device determination."
+      source_links:
+        - "https://eur-lex.europa.eu/eli/reg/2017/745/oj"
+    data_protection_framework:
+      name: "Regulation (EU) 2016/679 (GDPR)"
+      applicability: "applicable where personal data is processed (SOP-023)"
+    gxp_context:
+      applicability: "in_scope (customers use the product in GxP-regulated regulatory work)"
+      key_references:
+        - ref: "Directive 2001/83/EC and Regulation (EU) No 536/2014 - medicinal-product and clinical-trial framework in which IMPDs are submitted"
+          note: "Context for customers' regulated use; Zeuthen is not the applicant or sponsor."
+        - ref: "EudraLex Volume 4, Annex 11 - Computerised Systems"
+          note: "Customer GxP expectations for computerized systems."
+        - ref: "ISPE GAMP 5 (Second Edition)"
+          note: "Industry guide for risk-based computerized-system lifecycle; mapped in matrices/gamp5_gxp_gap_analysis.yml."
+      todo: "TODO: confirm with Egebro Consult which GxP expectations apply to their use of IMPD automation and record them in a quality agreement."
+classification_and_claims_policy:
+  principle: "Regulatory qualification, intended use, and claims are maintained per product and approved before release. Products in scope make no medical claim."

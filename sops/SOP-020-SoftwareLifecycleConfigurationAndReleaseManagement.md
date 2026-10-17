@@ -1,0 +1,166 @@
+---
+sop_id: SOP-020
+title: Software Lifecycle, Configuration, and Release Management (IEC 62304:2006+A1:2015 as good practice)
+revision: R14
+revision_date: 2026-10-17
+status: Published
+owner_role: engineering_lead
+approver_role: qa_lead
+related_issue: "TODO: link the Pharma-QMS adoption issue"
+---
+## 1. Purpose
+Define a risk-based software lifecycle control model aligned with IEC 62304:2006+A1:2015 for software development planning, system classification, verification and validation linkage, controlled change management, release-readiness gating, configuration management, release baselining, maintenance, and problem resolution.
+
+## 2. Scope
+Applies to regulated software products and significant product changes that require controlled software lifecycle records, including software made available through deployment or distribution.
+
+## 3. Inputs
+- Product intended use and claims
+- Regulatory and standards requirements
+- Risk management plan/register
+- Software requirements, architecture, and implementation artifacts
+- Known anomalies, cybersecurity findings, and post-production inputs
+
+## 4. Outputs
+- Approved software development and maintenance plan
+- Approved final release decision
+- Approved release-readiness and V&V-entry decision
+- Controlled software configuration baseline and release manifest
+- Linked verification/validation records and release decision evidence
+- Maintenance and problem-resolution records with feedback to risk and design controls
+
+## 5. Roles and Responsibilities
+| Role | Responsibilities |
+|---|---|
+| Engineering Lead | Owns software lifecycle planning, configuration identification, and release readiness. |
+| Engineer | Prepares implementation, build, and test artifacts and executes approved lifecycle activities. |
+| QA Lead | Verifies procedure conformance, traceability, record completeness, release scope, anomaly disposition, and maintenance follow-up actions. |
+| Management Representative | Approves major residual risk or release decisions requiring management review. |
+
+## 6. Procedure
+
+### 6.1 Software System Classification
+1. Assign software safety classification per product or subsystem before detailed development work.
+2. Classification rationale must reference intended use, hazardous situations, and current risk records.
+3. Classification changes require reassessment of verification depth, independence needs, and release criteria.
+
+### 6.2 Software Development Planning
+1. Define lifecycle model, deliverables, responsibilities, interfaces, and review gates before implementation.
+2. Plan must identify:
+   - target product or subsystem
+   - software safety classification
+   - required requirements, architecture, implementation, and review outputs
+   - verification/validation strategy and evidence expectations
+   - maintenance/problem-resolution approach
+3. Planning and approval are executed through the GitHub workflow defined in `wis/WI-001-VerificationAndValidationExecution.md` and `wis/WI-002-ConfigurationAndReleaseManagementExecution.md`.
+
+### 6.3 Development Outputs and SOUP/SOUP-Like Dependencies
+1. Maintain software requirements, architecture, implementation references, and traceability in the designated product repository.
+2. Identify externally sourced software components and document their intended use, version, and evaluation rationale.
+3. Changes to externally sourced components require impact review on risk, verification scope, and release baseline.
+
+### 6.4 Verification and Validation Interface
+1. Verification and validation records must be traceable to software requirements, risk controls, anomalies, and release decisions.
+2. Use controlled test-case identifiers and exact repository references to bind automated or manual evidence to the approved plan.
+3. Validation against intended use or user needs must be reviewed with appropriate clinical or regulatory participation where required.
+4. Dry-run executions may occur before formal release-readiness approval, but they are not release evidence until the candidate scope and binary deployment are formally approved and recorded.
+
+### 6.5 Configuration Identification and Baseline Control
+1. All controlled software lifecycle changes follow GitHub-managed change context -> branch -> pull request -> merge -> signature attestation -> immutable release evidence, where the change context may be established in a separate issue or directly in the PR.
+2. Working branches are collaboration and draft baselines only; they are not controlled release baselines and must not be used as the approved product state.
+3. Multiple approved product changes may exist in parallel on product `main`; the subsequent release is defined later by an explicit release-readiness decision, not by merge order alone.
+4. Before formal release-candidate V&V starts, record:
+   - the selected release cutoff or candidate revision on `main`
+   - which merged change records are included
+   - which merged change records are deferred
+   - the binary or deployment package that enters formal V&V
+5. Approved release baselines shall be immutable and uniquely identifiable.
+6. Each release-capable baseline must identify configuration items at minimum:
+   - source revision/commit
+   - relevant requirements/risk/test record revisions
+   - approved build or deployment package reference
+   - release manifest and rollback note
+7. Formal release test execution must record the exact environment and binary configuration at the start of each test run.
+8. Baseline updates after approval require a new PR revision; issue edits alone are not sufficient.
+
+### 6.6 Release Decision and Publication
+1. Release decisions require:
+   - approved release-readiness scope decision
+   - approved and current lifecycle records
+   - acceptable unresolved anomaly posture
+   - completed required verification/validation activities
+   - approved residual risk status
+2. Final release authorization must be made through a distinct group approval after the V&V report, residual-risk decision, anomaly posture, and exact binary/deployment reference are current.
+3. The normal final release decision group is QA Lead and Engineering Lead; Management Representative participates when escalation, exceptional residual risk, or management review is required.
+4. If the release binary changes after formal V&V entry, assess the change through change/risk/release records, record the new binary deployment, and determine whether partial or full re-execution is required before release.
+5. Release evidence is published as immutable GitHub release assets using the QMS tag and record publication model.
+6. Product record indexes in the designated product repository must link to the released baseline and associated evidence package.
+
+### 6.7 Maintenance and Problem Resolution
+1. Maintenance inputs include anomalies, complaints, incidents, cybersecurity findings, supplier changes, and PMS signals.
+2. Each software problem is logged with classification, impact, disposition, and linkage to affected requirements, risk items, and releases.
+3. High-severity or systemic software problems are escalated through nonconformity/CAPA and fed back into risk management and future V&V planning.
+
+### 6.8 Retirement and Decommissioning
+1. A controlled retirement decision is required when a released health software product or product version is to be withdrawn from the market, taken out of service, or otherwise removed from active distribution and support. Retirement may also be triggered through `SOP-015` for nonconformity-driven withdrawal.
+2. Each retirement decision must record at minimum:
+   - retired product or product-version identification, including released-baseline reference
+   - rationale for retirement and effective date
+   - assessment of impact on active users, customers, patients, and downstream services
+   - communication plan for affected users, customers, and applicable regulators, including withdrawal or end-of-support notice
+   - handling of residual risks and open incidents, complaints, vulnerabilities, and PMS signals at the time of retirement
+   - data retention and disposal expectations for product data, configuration, and credentials
+   - retention of released records, including release baselines, product record index, V&V, risk, and post-release evidence, per applicable retention requirements
+3. Retirement decisions are approved through the same GitHub-native lifecycle (issue or PR change context, approval, signature attestation, immutable release evidence) used for release decisions, and are linked from the product's release record index in the designated product repository (the source baseline's medical device file index is not applicable for the App with AI profile).
+4. The product record index status, accompanying information, and supplier/infrastructure references must be updated to reflect the retired state. Retirement may itself require coordinated complaint-handling and customer/supplier-notification actions through `SOP-012` and `SOP-010` (`SOP-013` and `SOP-014` are not applicable for the App with AI profile).
+5. Retired product versions remain part of the controlled record set for the applicable retention period; they must not be reactivated as if released without a new release decision under this SOP.
+
+## 7. Required Records
+- Software development and maintenance plan
+- Software safety classification rationale
+- Final release decision record
+- Release-readiness and V&V-entry decision record
+- Configuration item list and release baseline manifest
+- Verification/validation plan, execution, configuration-capture, and report references
+- Problem-resolution and maintenance records
+- Product retirement and decommissioning decision record, linked from the product record index
+
+## 8. Traceability
+| Standard Clause | Control in this SOP |
+|---|---|
+| IEC 62304:2006+A1:2015 4 | Defines quality system linkage and software lifecycle governance baseline. |
+| IEC 62304:2006+A1:2015 5 | Defines software development planning and lifecycle outputs. |
+| IEC 62304:2006+A1:2015 6 | Defines maintenance planning and execution linkage. |
+| IEC 62304:2006+A1:2015 7 | Defines software risk-management interfaces to IEC 62304:2006+A1:2015 activities. |
+| IEC 62304:2006+A1:2015 8 | Defines configuration identification, change, and release baseline control. |
+| IEC 62304:2006+A1:2015 9 | Defines problem-resolution recording and feedback. |
+| IEC 82304-1:2016 8 | Defines product retirement and decommissioning controls, including impact assessment, communication, residual-risk handling, and record retention for released health software products. |
+
+## 9. Related Controlled Documents
+- SOP-005 QMS Governance
+- SOP-007 Medical Device File Control (not applicable for the App with AI profile; not part of Pharma-QMS)
+- SOP-008 Design and Development Control
+- SOP-009 Change Management
+- SOP-015 Nonconforming Product Control
+- SOP-018 Risk Management (ISO 14971:2019 as good practice)
+- WI-001 Verification and Validation Execution
+- WI-002 Configuration and Release Management Execution
+
+## 10. Revision History
+| Revision | Revision Date | Change Summary |
+|---|---|---|
+| R00 | 2026-03-06 | Initial release establishing IEC 62304:2006+A1:2015 lifecycle, configuration, release, maintenance, and problem-resolution controls in the GitHub-native QMS model. |
+| R01 | 2026-03-07 | Normalized engineering and product/regulatory roles for small teams and clarified the distinction between engineer execution and engineering-owner accountability. |
+| R02 | 2026-03-07 | Simplified lifecycle role names to `engineering_lead` and `regulatory_lead`. |
+| R03 | 2026-03-07 | Clarified parallel change flow on product `main`, added the controlled release-readiness/V&V-entry gate, and made per-run execution configuration capture mandatory for formal release testing. |
+| R04 | 2026-03-07 | Added the explicit final release-decision gate after V&V and residual-risk review, separate from release-readiness approval. |
+| R05 | 2026-03-07 | Clarified that working branches are draft-only baselines and that controlled lifecycle changes may be initiated from PR-stated change context without a mandatory separate issue. |
+| R06 | 2026-03-07 | Removed overly specific signature-regulation terminology from the lifecycle signature wording and used technology-neutral language. |
+| R07 | 2026-03-08 | Updated the governance cross-reference after separating the Quality Manual from SOP-005. |
+| R08 | 2026-03-18 | Removed top-table standards clause metadata; normative references remain in the Traceability section. |
+| R09 | 2026-03-25 | Reframed the lifecycle purpose around risk-based control, expanded scope to deployed or distributed software, and required immutable uniquely identifiable approved release baselines. |
+| R10 | 2026-03-27 | Consolidated the standalone regulatory-lead release-oversight role into the QA-lead baseline and reduced the normal final release decision group accordingly. |
+| R11 | 2026-04-25 | Added an explicit retirement and decommissioning control for released health software products covering retirement decision, user/customer impact assessment, communication, residual-risk handling, retention, and MDF linkage to close IEC 82304-1:2016 clause 8. |
+| R12 | 2026-04-27 | Renamed YAML metadata field `effective_date` to `revision_date` to align controlled-document metadata with the tag-based publication model. The effective date is derived from the published QMS release tag rather than from the document front matter. |
+| R13 | 2026-05-04 | Standardize standards citations to specific versions. |
+| R14 | 2026-10-17 | Adopted into Pharma-QMS for Zeuthen from the upstream baseline release QMS-2026-07-09-R005; tailored for the App with AI profile; pending approval. |

@@ -1,0 +1,639 @@
+# Modified by Zeuthen, 2026-10-17
+name: 3.2 Training Issue Signature Flow
+run-name: 3.2 Training Issue Signature Flow
+
+on:
+  issues:
+    types: [opened, edited, reopened]
+  issue_comment:
+    types: [created, edited]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: training-issue-signature-${{ github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  request_signature_on_checklist_completion:
+    if: >-
+      github.event_name == 'issues' &&
+      github.event.issue.pull_request == null
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub App token for issue updates
+        id: app_token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.QMS_BOT_APP_ID }}
+          private-key: ${{ secrets.QMS_BOT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+
+      - name: Post signature request when checklist is complete
+        uses: actions/github-script@v8
+        env:
+          SIGNATURE_UI_BASE_URL: ${{ vars.SIGNATURE_UI_BASE_URL }}
+        with:
+          github-token: ${{ steps.app_token.outputs.token }}
+          script: |
+            const crypto = require('crypto');
+            const ACTIVE_LABELS = {
+              outstanding: {
+                name: 'signature/outstanding',
+                color: 'FBCA04',
+                description: 'Issue or merged PR is awaiting required electronic signatures.',
+              },
+              complete: {
+                name: 'signature/complete',
+                color: '0E8A16',
+                description: 'Issue or merged PR has collected the required electronic signatures.',
+              },
+            };
+            const LEGACY_LABELS = [
+              'signatures/outstanding',
+              'signatures/complete',
+            ];
+            const issue = context.payload.issue;
+            const labels = (issue.labels || []).map((l) => (l.name || '').toLowerCase());
+            if (!labels.includes('training-diff')) {
+              core.info(`Issue #${issue.number} is not training-diff; skipping.`);
+              return;
+            }
+
+            const checklistSectionRegex = /### (?:Controlled Document Checklist|SOP Delta Checklist)([\s\S]*?)(?:\n###\s|\n##\s|$)/i;
+            const body = String(issue.body || '');
+            const sectionMatch = body.match(checklistSectionRegex);
+            if (!sectionMatch) {
+              core.info(`Issue #${issue.number} has no controlled-document checklist section; skipping.`);
+              return;
+            }
+            const checklistSection = sectionMatch[1] || '';
+            const totalTasks = (checklistSection.match(/^- \[(?: |x|X)\] .+$/gm) || []).length;
+            const openTasks = (checklistSection.match(/^- \[ \] .+$/gm) || []).length;
+            if (totalTasks === 0) {
+              core.info(`Issue #${issue.number} has no checklist items; skipping.`);
+              return;
+            }
+            if (openTasks > 0) {
+              core.info(`Issue #${issue.number} still has ${openTasks}/${totalTasks} unchecked items; skipping signature request.`);
+              return;
+            }
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              per_page: 100,
+            });
+            const requestComments = comments
+              .filter((c) => String(c.body || '').includes('<!-- training-signature-request -->'))
+              .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0));
+            const hasAttestation = comments.some((c) => {
+              const b = String(c.body || '');
+              return b.includes('<!-- SIGNATURE_ATTESTATION_V1 -->') ||
+                b.includes('<!-- PART11_ATTESTATION_V1 -->') ||
+                b.includes('<!-- signature-native-attestation -->') ||
+                b.includes('<!-- part11-native-attestation -->');
+            });
+            async function ensureLabel(name, color, description) {
+              try {
+                const existing = await github.rest.issues.getLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name,
+                });
+                if (
+                  String(existing.data.color || '').toUpperCase() !== String(color || '').toUpperCase() ||
+                  String(existing.data.description || '') !== String(description || '')
+                ) {
+                  await github.rest.issues.updateLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name,
+                    new_name: name,
+                    color,
+                    description,
+                  });
+                }
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name,
+                  color,
+                  description,
+                });
+              }
+            }
+
+            async function applyState(labelToAdd, labelsToRemove) {
+              await ensureLabel(
+                ACTIVE_LABELS.outstanding.name,
+                ACTIVE_LABELS.outstanding.color,
+                ACTIVE_LABELS.outstanding.description
+              );
+              await ensureLabel(
+                ACTIVE_LABELS.complete.name,
+                ACTIVE_LABELS.complete.color,
+                ACTIVE_LABELS.complete.description
+              );
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: [labelToAdd],
+              });
+              for (const labelName of labelsToRemove) {
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number,
+                    name: labelName,
+                  });
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                }
+              }
+            }
+            if (hasAttestation) {
+              await applyState(ACTIVE_LABELS.complete.name, [
+                ACTIVE_LABELS.outstanding.name,
+                ...LEGACY_LABELS,
+              ]);
+              core.info(`Issue #${issue.number} already has a signature attestation; skipping request post.`);
+              return;
+            }
+
+            const markerMatch = body.match(/training-release:user=([A-Za-z0-9-]+)/i)
+              || body.match(/training-diff-consolidated:user=([A-Za-z0-9-]+)/i);
+            const markerUser = markerMatch ? markerMatch[1].toLowerCase() : '';
+            let trainee = ((issue.assignees || [])[0]?.login || '').toLowerCase();
+
+            if (!trainee && markerUser) {
+              await github.rest.issues.addAssignees({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                assignees: [markerUser],
+              });
+              trainee = markerUser;
+              core.info(`Assigned issue #${issue.number} to @${markerUser} from marker metadata.`);
+            }
+            if (!trainee) {
+              core.setFailed(`Issue #${issue.number} has no assignee and no training marker user; cannot create signature request.`);
+              return;
+            }
+
+            const signingBaseUrl = (process.env.SIGNATURE_UI_BASE_URL || '').trim().replace(/\/+$/g, '');
+            if (!signingBaseUrl) {
+              // Pharma-QMS: no signing endpoint is configured yet (adoption blocker).
+              // Exit cleanly with a notice instead of failing on every issue event.
+              core.notice(
+                `SIGNATURE_UI_BASE_URL is not configured; no training signature request was posted for issue #${issue.number}. ` +
+                'Training signatures stay blocked until a signing endpoint or an approved fallback is configured (see README "Adoption status").'
+              );
+              return;
+            }
+
+            const repoFull = `${context.repo.owner}/${context.repo.repo}`;
+            const bodyHash = crypto.createHash('sha256').update(body).digest('hex');
+            const targetHash = crypto.createHash('sha256').update(`${repoFull}:training_issue:${issue.number}:${bodyHash}`).digest('hex');
+            const meaning = 'Completed QMS Training Review';
+            const role = 'Trained Personnel';
+            const requiredSignatures = '1';
+            const signatureIndex = '1';
+            const link = `${signingBaseUrl}/sign?${new URLSearchParams({
+              repo: repoFull,
+              pr: String(issue.number),
+              signer: trainee,
+              role,
+            }).toString()}`;
+            const requestContext = {
+              version: 1,
+              hash: targetHash,
+              hash_scope: 'training_issue_content',
+              record_type: 'issue',
+              meaning,
+              required_signatures: requiredSignatures,
+              signers: [
+                {
+                  signer: trainee,
+                  role,
+                  signature_index: signatureIndex,
+                },
+              ],
+            };
+
+            const requestBody = [
+              '<!-- training-signature-request -->',
+              '<!-- signature-native-signature-request -->',
+              '<!-- SIGNATURE_REQUEST_CONTEXT_V1',
+              JSON.stringify(requestContext, null, 2),
+              '-->',
+              '🛑 Signature required',
+              '',
+              'Please confirm that you completed the training checklist in this issue.',
+              '',
+              'What you are approving:',
+              '- Your completed training review for the controlled documents listed in this issue.',
+              `- Signature meaning: ${meaning}.`,
+              '',
+              'How to sign:',
+              '1. Open the link next to your GitHub username below.',
+              '2. Sign in with that same GitHub account.',
+              '3. Confirm with your QMS PIN.',
+              '',
+              `- @${trainee}: [Review and sign](${link})`,
+              '',
+              '<details><summary>Technical details for the QMS record</summary>',
+              '<ul>',
+              `<li>Meaning of signature: <strong>${meaning}</strong></li>`,
+              `<li>Required signatures: <strong>${requiredSignatures}</strong></li>`,
+              `<li>Designated signatory role(s): <strong>${role}</strong></li>`,
+              `<li>Eligible signers: <strong>@${trainee}</strong></li>`,
+              `<li>Target hash (training issue content): <code>${targetHash}</code></li>`,
+              '</ul>',
+              '</details>',
+            ].join('\n');
+
+            const latestRequest = requestComments.length > 0 ? requestComments[requestComments.length - 1] : null;
+            if (latestRequest) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: latestRequest.id,
+                body: requestBody,
+              });
+              await applyState(ACTIVE_LABELS.outstanding.name, [
+                ACTIVE_LABELS.complete.name,
+                ...LEGACY_LABELS,
+              ]);
+              core.info(`Updated training signature request for issue #${issue.number}.`);
+              return;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              body: requestBody,
+            });
+            await applyState(ACTIVE_LABELS.outstanding.name, [
+              ACTIVE_LABELS.complete.name,
+              ...LEGACY_LABELS,
+            ]);
+
+  reconcile_signed_training_issues:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request == null &&
+        (
+          contains(github.event.comment.body, '<!-- SIGNATURE_ATTESTATION_V1 -->') ||
+          contains(github.event.comment.body, '<!-- PART11_ATTESTATION_V1 -->') ||
+          contains(github.event.comment.body, '<!-- signature-native-attestation -->') ||
+          contains(github.event.comment.body, '<!-- part11-native-attestation -->')
+        )
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub App token for issue updates
+        id: app_token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.QMS_BOT_APP_ID }}
+          private-key: ${{ secrets.QMS_BOT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+
+      - name: Checkout default branch
+        uses: actions/checkout@v5
+        with:
+          token: ${{ steps.app_token.outputs.token }}
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Close signed training issues and publish immutable release
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ steps.app_token.outputs.token }}
+          script: |
+            const ACTIVE_LABELS = {
+              outstanding: 'signature/outstanding',
+              complete: 'signature/complete',
+            };
+            const LEGACY_LABELS = [
+              'signatures/outstanding',
+              'signatures/complete',
+            ];
+            function parseJsonBlock(text) {
+              const m = String(text || '').match(/```json\s*([\s\S]*?)```/i);
+              if (!m || !m[1]) return null;
+              try { return JSON.parse(m[1]); } catch { return null; }
+            }
+
+            const checklistSectionRegex = /### (?:Controlled Document Checklist|SOP Delta Checklist)([\s\S]*?)(?:\n###\s|\n##\s|$)/i;
+            const attestationMarkers = [
+              '<!-- SIGNATURE_ATTESTATION_V1 -->',
+              '<!-- PART11_ATTESTATION_V1 -->',
+              '<!-- signature-native-attestation -->',
+              '<!-- part11-native-attestation -->',
+            ];
+
+            if (context.eventName === 'issue_comment') {
+              const commentBody = String(context.payload.comment?.body || '');
+              const isAttestationComment = attestationMarkers.some((marker) => commentBody.includes(marker));
+              if (!isAttestationComment) {
+                core.info('Issue comment is not a signature attestation; skipping reconciliation.');
+                return;
+              }
+            }
+
+            function parseChecklistItems(body) {
+              const sectionMatch = String(body || '').match(checklistSectionRegex);
+              if (!sectionMatch) return [];
+              const section = sectionMatch[1] || '';
+              const items = [];
+              const regex = /^- \[(?: |x|X)\]\s+`?((?:QM|SOP|WI)-\d+)`?(?:.*?):\s+`?([^`\n]+?)`?\s*->\s*`?([^`\n]+?)`?\s*$/gm;
+              let match;
+              while ((match = regex.exec(section)) !== null) {
+                items.push({
+                  doc_id: String(match[1] || '').trim().toUpperCase(),
+                  from_revision: String(match[2] || '').trim().toUpperCase(),
+                  to_revision: String(match[3] || '').trim().toUpperCase(),
+                });
+              }
+              return items;
+            }
+
+            function parseRolesInScope(body) {
+              const match = String(body || '').match(/- Roles in scope:\s+`([^`]+)`/i);
+              if (!match || !match[1]) return [];
+              return String(match[1]).split(',').map((part) => part.trim()).filter(Boolean);
+            }
+
+            function parseTrainingUser(body) {
+              const match = String(body || '').match(/- Training user:\s+`([^`]+)`\s+\(`@([A-Za-z0-9-]+)`\)/i);
+              if (!match) return { fullName: '', login: '' };
+              return {
+                fullName: String(match[1] || '').trim(),
+                login: String(match[2] || '').trim(),
+              };
+            }
+
+            const issues = context.eventName === 'issue_comment'
+              ? [context.payload.issue]
+              : await github.paginate(github.rest.issues.listForRepo, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  state: 'open',
+                  labels: 'training-diff',
+                  per_page: 100,
+                });
+
+            let closedCount = 0;
+            let skippedCount = 0;
+
+            for (const issue of issues) {
+              if (issue.pull_request) continue;
+              if (String(issue.state || '').toLowerCase() !== 'open') continue;
+
+              const labels = (issue.labels || []).map((l) => String(l.name || '').toLowerCase());
+              if (!labels.includes('training-diff')) { skippedCount += 1; continue; }
+
+              const issueBody = String(issue.body || '');
+              const checklistMatch = issueBody.match(checklistSectionRegex);
+              if (!checklistMatch) { skippedCount += 1; continue; }
+              const checklistSection = checklistMatch[1] || '';
+              const openTasks = (checklistSection.match(/^- \[ \] .+$/gm) || []).length;
+              if (openTasks > 0) { skippedCount += 1; continue; }
+
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                per_page: 100,
+              });
+
+              const alreadyCompleted = comments.some((c) => String(c.body || '').includes('<!-- training-signature-complete -->'));
+              if (alreadyCompleted) { skippedCount += 1; continue; }
+
+              const markerMatch = issueBody.match(/training-release:user=([A-Za-z0-9-]+)/i)
+                || issueBody.match(/training-diff-consolidated:user=([A-Za-z0-9-]+)/i);
+              const markerUser = markerMatch ? String(markerMatch[1] || '').toLowerCase() : '';
+              const assigneeUser = ((issue.assignees || [])[0]?.login || '').toLowerCase();
+              const expectedSigner = assigneeUser || markerUser;
+
+              const candidateComments = comments
+                .filter((c) => {
+                  const b = String(c.body || '');
+                  return attestationMarkers.some((marker) => b.includes(marker));
+                })
+                .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0));
+
+              let selected = null;
+              let selectedCommentUrl = '';
+              for (let i = candidateComments.length - 1; i >= 0; i -= 1) {
+                const c = candidateComments[i];
+                const parsed = parseJsonBlock(c.body || '');
+                if (!parsed) continue;
+
+                const attRepo = String(parsed.repository || '').toLowerCase();
+                const expectedRepo = `${context.repo.owner}/${context.repo.repo}`.toLowerCase();
+                const attNumber = Number.parseInt(String(parsed.record_number || parsed.pr_number || ''), 10);
+                if (attRepo !== expectedRepo || attNumber !== issue.number) continue;
+
+                const signer = String(parsed.user_id || parsed.actor_login || '').toLowerCase();
+                if (expectedSigner && signer !== expectedSigner) continue;
+
+                selected = parsed;
+                selectedCommentUrl = String(c.html_url || '');
+                break;
+              }
+
+              if (!selected) { skippedCount += 1; continue; }
+
+              const checklistItems = parseChecklistItems(issueBody);
+              if (checklistItems.length === 0) { skippedCount += 1; continue; }
+              const parsedUser = parseTrainingUser(issueBody);
+              const rolesInScope = parseRolesInScope(issueBody);
+
+              const targetHash = String(selected.target_hash || selected.commit_hash || '').toLowerCase();
+              const hashShort = (targetHash || 'nohash').slice(0, 12);
+              const baseTag = `sig-train-${issue.number}-h${hashShort}`;
+
+              const releases = await github.paginate(github.rest.repos.listReleases, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100,
+              });
+              let maxRev = 0;
+              for (const rel of releases) {
+                const tag = String(rel.tag_name || '');
+                const m = tag.match(new RegExp(`^${baseTag}-r(\\d+)$`));
+                if (!m) continue;
+                const n = Number.parseInt(m[1], 10);
+                if (Number.isInteger(n) && n > maxRev) maxRev = n;
+              }
+              const nextRev = String(maxRev + 1).padStart(2, '0');
+              const tagName = `${baseTag}-r${nextRev}`;
+
+              const bundle = {
+                schema_version: 1,
+                attestation_scope: 'training_issue_signature',
+                source_repository: `${context.repo.owner}/${context.repo.repo}`,
+                source_issue: issue.number,
+                source_issue_title: String(issue.title || ''),
+                source_issue_url: String(issue.html_url || ''),
+                source_attestation_comment_url: selectedCommentUrl,
+                part11_target_hash: targetHash,
+                captured_at_utc: new Date().toISOString(),
+                signed_attestations: [selected],
+              };
+              const bundleJson = `${JSON.stringify(bundle, null, 2)}\n`;
+
+              const release = await github.rest.repos.createRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag_name: tagName,
+                target_commitish: String(context.payload.repository?.default_branch || 'main'),
+                name: `Training Signature: Issue #${issue.number}`,
+                body: [
+                  '# Immutable Training Signature Record',
+                  '',
+                  `- Source issue: #${issue.number}`,
+                  `- Source issue URL: ${String(issue.html_url || 'n/a')}`,
+                  `- Source issue title: ${String(issue.title || 'n/a')}`,
+                  `- Target hash: \`${targetHash || 'n/a'}\``,
+                  `- Signer: \`${String(selected.user_id || selected.actor_login || 'n/a')}\``,
+                  `- Meaning: \`${String(selected.meaning_of_signature || 'Completed QMS Training Review')}\``,
+                  '',
+                  'Assets:',
+                  '- `signed_attestation.json`',
+                  '- `training_completion_manifest.json`',
+                ].join('\n'),
+                draft: true,
+                prerelease: false,
+              });
+
+              await github.rest.repos.uploadReleaseAsset({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: release.data.id,
+                name: 'signed_attestation.json',
+                data: Buffer.from(bundleJson, 'utf8'),
+                headers: {
+                  'content-type': 'application/json',
+                  'content-length': Buffer.byteLength(bundleJson),
+                },
+              });
+
+              const completionContext = {
+                version: 1,
+                source_repository: `${context.repo.owner}/${context.repo.repo}`,
+                source_issue: issue.number,
+                source_issue_title: String(issue.title || ''),
+                source_issue_url: String(issue.html_url || ''),
+                trainee_login: expectedSigner,
+                trainee_full_name: parsedUser.fullName || expectedSigner,
+                roles_in_scope: rolesInScope,
+                completed_at_utc: String(selected.timestamp || new Date().toISOString()),
+                source_attestation_comment_url: selectedCommentUrl,
+                evidence_release_tag: tagName,
+                evidence_release_url: String(release.data.html_url || ''),
+                signer_login: String(selected.user_id || selected.actor_login || ''),
+                signer_full_name: String(selected.signer_full_name || ''),
+                meaning_of_signature: String(selected.meaning_of_signature || 'Completed QMS Training Review'),
+                documents: checklistItems,
+              };
+              const completionJson = `${JSON.stringify(completionContext, null, 2)}\n`;
+
+              await github.rest.repos.uploadReleaseAsset({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: release.data.id,
+                name: 'training_completion_manifest.json',
+                data: Buffer.from(completionJson, 'utf8'),
+                headers: {
+                  'content-type': 'application/json',
+                  'content-length': Buffer.byteLength(completionJson),
+                },
+              });
+
+              const publishedRelease = await github.rest.repos.updateRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: release.data.id,
+                draft: false,
+                prerelease: false,
+              });
+
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+              });
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: [ACTIVE_LABELS.complete],
+              });
+              for (const labelName of [ACTIVE_LABELS.outstanding, ...LEGACY_LABELS]) {
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number,
+                    name: labelName,
+                  });
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                }
+              }
+
+              const lines = [
+                '<!-- training-signature-complete -->',
+                '<!-- TRAINING_COMPLETION_CONTEXT_V1',
+                JSON.stringify(completionContext, null, 2),
+                '-->',
+                '✅ Training checklist signed. Issue closed automatically.',
+                `Immutable signature release: ${String(publishedRelease.data.html_url || '')}`,
+                `Release tag: \`${tagName}\``,
+              ];
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: lines.join('\n'),
+              });
+
+              closedCount += 1;
+            }
+
+            core.summary
+              .addHeading('Training signature reconciliation')
+              .addRaw(`Closed issues: ${closedCount}\n`, true)
+              .addRaw(`Skipped issues: ${skippedCount}\n`, true)
+              .write();
+
+  refresh_training_status_pr:
+    needs: reconcile_signed_training_issues
+    if: needs.reconcile_signed_training_issues.result == 'success'
+    uses: ./.github/workflows/3.3_refresh_training_status_pr.yml
+    secrets: inherit

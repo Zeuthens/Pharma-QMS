@@ -1,0 +1,898 @@
+name: 3.1 Release Training Diff
+run-name: 3.1 Release Training Diff
+
+on:
+  push:
+    tags:
+      - 'QMS-*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Optional training release tag (QMS-YYYY-MM-DD-RNNN or refs/tags/QMS-YYYY-MM-DD-RNNN). Blank => latest QMS tag, then HEAD."
+        required: false
+      training_user:
+        description: "Optional GitHub username to limit issue creation to one user"
+        required: false
+      assignment_ref:
+        description: "Optional ref for user registry, role membership, and training status. Blank => default branch for targeted training_user, otherwise the release snapshot."
+        required: false
+      additional_documents:
+        description: "Optional extra controlled-document ids (QM/SOP/WI; comma, space, or newline separated) to append for manual training"
+        required: false
+
+env:
+  TRAINING_RELEASE_TAG_REGEX: '^QMS-[0-9]{4}-[0-9]{2}-[0-9]{2}-R[0-9]{3}$'
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: >-
+    training-release-diff-${{ github.event_name == 'push' && github.ref_name || format('{0}-{1}-{2}', github.event.inputs.release_tag || 'latest', github.event.inputs.training_user || 'all', github.event.inputs.additional_documents || 'auto') }}
+  cancel-in-progress: false
+
+jobs:
+  open_training_diff_issues:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve and validate training release tag
+        id: gate
+        uses: actions/github-script@v8
+        env:
+          TRAINING_RELEASE_TAG_REGEX: ${{ env.TRAINING_RELEASE_TAG_REGEX }}
+        with:
+          script: |
+            const eventName = context.eventName;
+            const defaultBranch = String(context.payload?.repository?.default_branch || 'main').trim() || 'main';
+            const serverUrl = String(process.env.GITHUB_SERVER_URL || context.serverUrl || 'https://github.com').replace(/\/+$/g, '');
+            const repoFull = `${context.repo.owner}/${context.repo.repo}`;
+            const regexSource = process.env.TRAINING_RELEASE_TAG_REGEX || '^QMS-[0-9]{4}-[0-9]{2}-[0-9]{2}-R[0-9]{3}$';
+            const regex = new RegExp(regexSource);
+
+            function normalizeTag(value) {
+              return String(value || '').trim().replace(/^refs\/tags\//, '');
+            }
+
+            function parseTag(tag) {
+              const match = /^QMS-(\d{4})-(\d{2})-(\d{2})-R(\d{3})$/.exec(tag);
+              if (!match) return null;
+              return {
+                tag,
+                year: Number.parseInt(match[1], 10),
+                month: Number.parseInt(match[2], 10),
+                day: Number.parseInt(match[3], 10),
+                revision: Number.parseInt(match[4], 10),
+              };
+            }
+
+            function compareParsedTags(left, right) {
+              return (
+                left.year - right.year ||
+                left.month - right.month ||
+                left.day - right.day ||
+                left.revision - right.revision
+              );
+            }
+
+            async function listMatchingReleaseTags() {
+              const refs = await github.paginate(github.rest.git.listMatchingRefs, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: 'tags/QMS-',
+                per_page: 100,
+              });
+              return refs
+                .map((ref) => normalizeTag(String(ref.ref || '')))
+                .filter((tag) => regex.test(tag))
+                .map((tag) => parseTag(tag))
+                .filter(Boolean)
+                .sort((a, b) => compareParsedTags(b, a))
+                .map((entry) => entry.tag);
+            }
+
+            async function resolveReleaseTarget(requestedTag) {
+              if (requestedTag) {
+                if (!regex.test(requestedTag)) {
+                  core.setFailed(`workflow_dispatch input release_tag must match ${regex} when provided.`);
+                  return null;
+                }
+                try {
+                  await github.rest.git.getRef({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    ref: `tags/${requestedTag}`,
+                  });
+                } catch (error) {
+                  core.setFailed(`workflow_dispatch input release_tag '${requestedTag}' was not found in ${repoFull}.`);
+                  return null;
+                }
+                return {
+                  checkoutRef: requestedTag,
+                  releaseLabel: requestedTag,
+                  releaseUrl: `${serverUrl}/${repoFull}/releases/tag/${requestedTag}`,
+                  releaseSource: 'input_tag',
+                };
+              }
+
+              const matchingTags = await listMatchingReleaseTags();
+              if (matchingTags.length > 0) {
+                const latestTag = matchingTags[0];
+                core.info(`No release_tag provided. Using latest matching QMS tag '${latestTag}'.`);
+                return {
+                  checkoutRef: latestTag,
+                  releaseLabel: latestTag,
+                  releaseUrl: `${serverUrl}/${repoFull}/releases/tag/${latestTag}`,
+                  releaseSource: 'latest_tag',
+                };
+              }
+
+              core.info(`No release_tag provided and no matching QMS tags found. Falling back to ${defaultBranch} HEAD.`);
+              return {
+                checkoutRef: defaultBranch,
+                releaseLabel: 'HEAD',
+                releaseUrl: `${serverUrl}/${repoFull}/tree/${defaultBranch}`,
+                releaseSource: 'head',
+              };
+            }
+
+            let tag = '';
+            let trainingUser = '';
+            let assignmentRef = '';
+            let additionalDocuments = '';
+            let resolved = null;
+            if (eventName === 'workflow_dispatch') {
+              const inputs = context.payload.inputs || {};
+              tag = normalizeTag(inputs.release_tag);
+              trainingUser = String(inputs.training_user || '').trim().replace(/^@/, '');
+              assignmentRef = String(inputs.assignment_ref || '').trim().replace(/^refs\/(?:heads|tags)\//, '');
+              additionalDocuments = String(inputs.additional_documents || '').trim();
+              resolved = await resolveReleaseTarget(tag);
+              if (!resolved) {
+                return;
+              }
+            } else if (eventName === 'push') {
+              tag = normalizeTag(context.ref);
+              resolved = {
+                checkoutRef: tag,
+                releaseLabel: tag,
+                releaseUrl: `${serverUrl}/${repoFull}/releases/tag/${tag}`,
+                releaseSource: 'push_tag',
+              };
+            }
+
+            const validationTarget = tag || resolved?.releaseLabel || '';
+            if (resolved?.releaseSource !== 'head' && !regex.test(validationTarget)) {
+              core.info(`Skipping training issue generation. Release tag '${validationTarget}' does not match training pattern ${regex}.`);
+              core.setOutput('run_training', 'false');
+              return;
+            }
+            if (additionalDocuments && !trainingUser) {
+              core.setFailed('workflow_dispatch input additional_documents requires training_user.');
+              return;
+            }
+            if (!assignmentRef) {
+              assignmentRef = trainingUser ? defaultBranch : resolved.checkoutRef;
+            }
+            core.info(`Training release target accepted: ${resolved.releaseLabel} (${resolved.releaseSource}).`);
+            core.setOutput('run_training', 'true');
+            core.setOutput('release_tag', resolved.releaseLabel);
+            core.setOutput('release_url', resolved.releaseUrl);
+            core.setOutput('release_source', resolved.releaseSource);
+            core.setOutput('checkout_ref', resolved.checkoutRef);
+            core.setOutput('training_user', trainingUser);
+            core.setOutput('assignment_ref', assignmentRef);
+            core.setOutput('additional_documents', additionalDocuments);
+
+      - name: Checkout
+        if: steps.gate.outputs.run_training == 'true'
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.gate.outputs.checkout_ref }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Setup Python
+        if: steps.gate.outputs.run_training == 'true'
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Build consolidated training gap payload
+        if: steps.gate.outputs.run_training == 'true'
+        id: payload
+        env:
+          RELEASE_TAG: ${{ steps.gate.outputs.release_tag }}
+          RELEASE_URL: ${{ steps.gate.outputs.release_url }}
+          RELEASE_SOURCE: ${{ steps.gate.outputs.release_source }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CHECKOUT_REF: ${{ steps.gate.outputs.checkout_ref }}
+          TRAINING_USER: ${{ steps.gate.outputs.training_user }}
+          ASSIGNMENT_REF: ${{ steps.gate.outputs.assignment_ref }}
+          ADDITIONAL_DOCUMENTS: ${{ steps.gate.outputs.additional_documents }}
+          RUNNER_TEMP: ${{ runner.temp }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python -m pip install --quiet pyyaml
+          python <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from collections import defaultdict
+          from pathlib import Path
+
+          import yaml
+
+          def git_output(args):
+            return subprocess.check_output(["git", *args], text=True).strip()
+
+          def git_output_allow_fail(args):
+            proc = subprocess.run(["git", *args], text=True, capture_output=True)
+            if proc.returncode != 0:
+              return ""
+            return (proc.stdout or "").strip()
+
+          def extract_doc_id(text: str) -> str:
+            m = re.search(r"((?:QM|SOP|WI)-\d+)", str(text or ""), flags=re.IGNORECASE)
+            return m.group(1).upper() if m else ""
+
+          def extract_doc_ids(text: str):
+            return [
+              match.upper()
+              for match in re.findall(r"\b((?:QM|SOP|WI)-\d+)\b", str(text or ""), flags=re.IGNORECASE)
+            ]
+
+          def parse_revision(rev: str) -> int:
+            m = re.fullmatch(r"R(\d+)", str(rev or "").strip().upper())
+            return int(m.group(1)) if m else -1
+
+          def newer_revision(candidate: str, baseline: str) -> bool:
+            return parse_revision(candidate) > parse_revision(baseline)
+
+          def normalize_login(value: str) -> str:
+            return str(value or "").strip().lstrip("@").lower()
+
+          repository = os.environ.get("REPOSITORY", "").strip()
+          default_branch = os.environ.get("DEFAULT_BRANCH", "").strip() or "main"
+          checkout_ref = os.environ.get("CHECKOUT_REF", "").strip()
+          assignment_ref = os.environ.get("ASSIGNMENT_REF", "").strip() or checkout_ref
+          release_tag = os.environ.get("RELEASE_TAG", "").strip() or "manual-dispatch"
+          release_url = os.environ.get("RELEASE_URL", "").strip() or ""
+          release_source = os.environ.get("RELEASE_SOURCE", "").strip() or "manual-dispatch"
+          training_user = os.environ.get("TRAINING_USER", "").strip().lstrip("@")
+          additional_documents_raw = os.environ.get("ADDITIONAL_DOCUMENTS", "").strip()
+          additional_doc_ids = list(dict.fromkeys(extract_doc_ids(additional_documents_raw)))
+
+          def fetch_repo_file(path: str, ref: str) -> str:
+            encoded_path = urllib.parse.quote(str(path or "").strip().lstrip("/"), safe="/")
+            encoded_ref = urllib.parse.quote(str(ref or "").strip(), safe="")
+            req = urllib.request.Request(
+              f"https://api.github.com/repos/{repository}/contents/{encoded_path}?ref={encoded_ref}",
+              headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+                "X-GitHub-Api-Version": "2022-11-28",
+              },
+            )
+            with urllib.request.urlopen(req) as response:  # noqa: S310
+              payload = json.loads(response.read().decode("utf-8"))
+            content = payload.get("content", "")
+            if payload.get("encoding") == "base64":
+              return base64.b64decode(content).decode("utf-8")
+            return str(content)
+
+          def read_repo_text(path: str, ref: str, allow_missing: bool = False) -> str:
+            path = str(path or "").strip()
+            ref = str(ref or "").strip()
+            if not path:
+              return ""
+            if not ref or ref == checkout_ref:
+              local_path = Path(path)
+              if local_path.exists():
+                return local_path.read_text(encoding="utf-8")
+              if allow_missing:
+                return ""
+              raise FileNotFoundError(path)
+            try:
+              return fetch_repo_file(path, ref)
+            except urllib.error.HTTPError as error:
+              if allow_missing and error.code == 404:
+                return ""
+              raise
+
+          def parse_readme_index(path: Path):
+            text = path.read_text(encoding="utf-8")
+            start = "<!-- PUBLISHED-CONTROLLED-DOC-INDEX:START -->"
+            end = "<!-- PUBLISHED-CONTROLLED-DOC-INDEX:END -->"
+            if start not in text or end not in text:
+              return {}
+            block = text.split(start, 1)[1].split(end, 1)[0]
+            published = {}
+            for line in block.splitlines():
+              row = line.strip()
+              if not row.startswith("|"):
+                continue
+              if row.startswith("| Document ID ") or row.startswith("|---"):
+                continue
+              cols = [c.strip() for c in row.strip("|").split("|")]
+              if len(cols) < 6:
+                continue
+              doc_id, title, doc_file, _date, revision, _status = cols[:6]
+              if not re.fullmatch(r"(?:QM|SOP|WI)-\d+", doc_id):
+                continue
+              published[doc_id] = {
+                "title": title,
+                "file": doc_file,
+                "revision": revision,
+              }
+            return published
+
+          def parse_readme_doc_nav(path: Path):
+            text = path.read_text(encoding="utf-8")
+            entries = {}
+            pattern = re.compile(
+              r"^- \[(?P<title>[^\]]+)\]\((?P<path>(?:qm|sops|wis)/[^)]+)\) - `(?P<revision>R\d{2})`$",
+              flags=re.MULTILINE,
+            )
+            for match in pattern.finditer(text):
+              doc_path = match.group("path").strip()
+              id_match = re.search(r"((?:QM|SOP|WI)-\d+)", doc_path, flags=re.IGNORECASE)
+              if not id_match:
+                continue
+              doc_id = id_match.group(1).upper()
+              entries[doc_id] = {
+                "title": match.group("title").strip(),
+                "path": doc_path,
+                "revision": match.group("revision").strip().upper(),
+              }
+            return entries
+
+          history_cache = {}
+
+          def parse_revision_from_file_content(text: str) -> str:
+            m = re.search(r"(?mi)^revision:\s*(R\d+)\s*$", text or "")
+            return m.group(1).upper() if m else ""
+
+          def parse_title_from_file_content(text: str) -> str:
+            m = re.search(r"(?mi)^title:\s*(.+?)\s*$", text or "")
+            return m.group(1).strip() if m else ""
+
+          def file_history_info(file_path: str):
+            if file_path in history_cache:
+              return history_cache[file_path]
+
+            commits_raw = git_output_allow_fail(["rev-list", "--reverse", "HEAD", "--", file_path])
+            commits = [c.strip() for c in commits_raw.splitlines() if c.strip()]
+            if not commits:
+              history_cache[file_path] = {
+                "first_sha": "",
+                "latest_sha": "",
+                "rev_to_sha": {},
+              }
+              return history_cache[file_path]
+
+            rev_to_sha = {}
+            for sha in commits:
+              content = git_output_allow_fail(["show", f"{sha}:{file_path}"])
+              if not content:
+                continue
+              rev = parse_revision_from_file_content(content)
+              if rev:
+                rev_to_sha[rev] = sha
+
+            history_cache[file_path] = {
+              "first_sha": commits[0],
+              "latest_sha": commits[-1],
+              "rev_to_sha": rev_to_sha,
+            }
+            return history_cache[file_path]
+
+          def build_diff_preview(file_path: str, from_sha: str, to_sha: str, max_lines: int = 120) -> str:
+            if not from_sha or not to_sha or from_sha == to_sha:
+              return ""
+            diff_raw = git_output_allow_fail(["diff", "--unified=1", f"{from_sha}..{to_sha}", "--", file_path])
+            if not diff_raw:
+              return ""
+            lines = diff_raw.splitlines()
+            if len(lines) > max_lines:
+              lines = lines[:max_lines] + [f"... diff preview truncated to {max_lines} lines ..."]
+            return "\n".join(lines)
+
+          def github_diff_anchor(file_path: str) -> str:
+            file_path = str(file_path or "").strip()
+            if not file_path:
+              return ""
+            # GitHub compare/commit pages anchor each file diff section as #diff-<sha256(path)>.
+            return hashlib.sha256(file_path.encode("utf-8")).hexdigest()
+
+          def github_diff_url(compare_url: str, file_path: str) -> str:
+            compare_url = str(compare_url or "").strip()
+            diff_anchor = github_diff_anchor(file_path)
+            if not compare_url or not diff_anchor:
+              return compare_url
+            short_path = diff_anchor[:7]
+            return f"{compare_url}?short_path={short_path}#diff-{diff_anchor}"
+
+          def build_doc_gap(doc_id: str, doc_title: str, doc_file: str, from_revision: str, to_revision: str, roles, force_include: bool = False):
+            if not force_include and from_revision == to_revision:
+              return None
+
+            file_url = f"https://github.com/{repository}/blob/{default_branch}/{doc_file}" if doc_file else ""
+            diff_url = ""
+            diff_label = ""
+            diff_preview = ""
+            if doc_file:
+              history = file_history_info(doc_file)
+              latest_sha = history.get("latest_sha", "")
+              if from_revision in {"UNTRAINED", "MANUAL"}:
+                diff_url = ""
+              else:
+                from_sha = (history.get("rev_to_sha", {}) or {}).get(from_revision, "")
+                to_sha = (history.get("rev_to_sha", {}) or {}).get(to_revision, "") or latest_sha
+                if from_sha and to_sha and from_sha != to_sha:
+                  diff_url = github_diff_url(
+                    f"https://github.com/{repository}/compare/{from_sha}..{to_sha}",
+                    doc_file,
+                  )
+                  diff_label = f"Compare {from_revision} -> {to_revision}"
+                  diff_preview = build_diff_preview(doc_file, from_sha, to_sha)
+
+            return {
+              "doc_id": doc_id,
+              "doc_title": doc_title,
+              "doc_file": doc_file,
+              "from_revision": from_revision,
+              "to_revision": to_revision,
+              "roles": sorted(roles or []),
+              "diff_url": diff_url,
+              "diff_label": diff_label,
+              "file_url": file_url,
+              "diff_preview": diff_preview,
+            }
+
+          GITHUB_ISSUE_BODY_SOFT_LIMIT = 65000
+
+          def render_gap_lines(gap, roles_label: str, default_roles_text: str, checkbox: bool = True, include_preview: bool = True):
+            doc_suffix = f" ({gap['doc_title']})" if gap["doc_title"] else ""
+            roles_text = ", ".join(gap["roles"]) if gap["roles"] else default_roles_text
+            links = []
+            if gap["diff_url"]:
+              links.append(f"[{gap['diff_label'] or 'Compare revisions'}]({gap['diff_url']})")
+            if gap["file_url"]:
+              links.append(f"[Current document]({gap['file_url']})")
+            links_text = " | ".join(links) if links else "n/a"
+            prefix = "- [ ]" if checkbox else "-"
+
+            lines = [
+              f"{prefix} `{gap['doc_id']}`{doc_suffix}: `{gap['from_revision']}` -> `{gap['to_revision']}`",
+              f"  - File: `{gap['doc_file'] or 'n/a'}`",
+              f"  - {roles_label}: `{roles_text}`",
+              f"  - Links: {links_text}",
+            ]
+
+            if include_preview and gap["diff_preview"]:
+              lines.extend(
+                [
+                  "",
+                  f"  <details><summary>{gap['doc_id']} diff preview</summary>",
+                  "",
+                  "  ```diff",
+                  *[f"  {ln}" for ln in gap["diff_preview"].splitlines()],
+                  "  ```",
+                  "  </details>",
+                  "",
+                ]
+              )
+
+            return lines
+
+          checkout_ref = os.environ.get("CHECKOUT_REF", "").strip()
+          assignment_ref = os.environ.get("ASSIGNMENT_REF", "").strip() or checkout_ref
+          release_matrix = yaml.safe_load(Path("matrices/training_matrix.yml").read_text(encoding="utf-8")) or {}
+          assignment_matrix = release_matrix
+          if assignment_ref != checkout_ref:
+            assignment_matrix = yaml.safe_load(read_repo_text("matrices/training_matrix.yml", assignment_ref)) or {}
+          status = yaml.safe_load(read_repo_text("records/training/training_status.yml", assignment_ref, allow_missing=True)) or {}
+          legacy_logs = yaml.safe_load(read_repo_text("records/training/user_training_log.yml", assignment_ref, allow_missing=True)) or {}
+          published = parse_readme_index(Path("README.md"))
+          readme_nav = parse_readme_doc_nav(Path("README.md"))
+
+          if release_source == "head":
+            head_sha = git_output_allow_fail(["rev-parse", "HEAD"])
+            if head_sha:
+              release_tag = f"HEAD-{head_sha[:12]}"
+              release_url = f"https://github.com/{repository}/commit/{head_sha}"
+
+          roles = release_matrix.get("roles", {}) or {}
+          assignment_roles = assignment_matrix.get("roles", {}) or {}
+          users_cfg_raw = assignment_matrix.get("users", {}) or {}
+          users_cfg = {
+            normalize_login(login): profile
+            for login, profile in users_cfg_raw.items()
+            if normalize_login(login)
+          }
+          display_login_by_user = {
+            normalize_login(login): str(login).strip().lstrip("@")
+            for login in users_cfg_raw.keys()
+            if normalize_login(login)
+          }
+          status_users = (status or {}).get("users", {}) or {}
+          trained_by_user = {}
+          for user, user_entry in status_users.items():
+            login = normalize_login(user)
+            if not login:
+              continue
+            documents = (user_entry or {}).get("documents", {}) or {}
+            display_login_by_user.setdefault(login, str(user).strip().lstrip("@"))
+            trained_by_user[login] = {
+              str(doc_id).strip().upper(): str((doc_entry or {}).get("trained_revision") or "").strip().upper()
+              for doc_id, doc_entry in documents.items()
+              if str(doc_id).strip()
+            }
+          for user, legacy_entry in ((legacy_logs or {}).get("users", {}) or {}).items():
+            login = normalize_login(user)
+            if not login:
+              continue
+            if login in trained_by_user:
+              continue
+            display_login_by_user.setdefault(login, str(user).strip().lstrip("@"))
+            trained_by_user[login] = {
+              str(doc_id).strip().upper(): str(revision).strip().upper()
+              for doc_id, revision in (legacy_entry or {}).items()
+              if str(doc_id).strip()
+            }
+
+          requirements_by_user = defaultdict(dict)
+          awareness_by_user = defaultdict(dict)
+          roles_by_user = defaultdict(set)
+
+          for role_name, role_def in roles.items():
+            users = []
+            role_membership_def = assignment_roles.get(role_name, {}) or {}
+            for raw_user in (role_membership_def.get("users", role_def.get("users", [])) or []):
+              login = normalize_login(raw_user)
+              if not login:
+                continue
+              users.append(login)
+              display_login_by_user.setdefault(login, str(raw_user).strip().lstrip("@"))
+            required_documents = [
+              str(s).strip()
+              for s in (
+                role_def.get("required_documents", [])
+                or role_def.get("required_sops", [])
+                or []
+              )
+              if str(s).strip()
+            ]
+            awareness_documents = [
+              str(s).strip()
+              for s in (role_def.get("awareness_documents", []) or [])
+              if str(s).strip()
+            ]
+            required_revisions = {
+              extract_doc_id(k): str(v).strip().upper()
+              for k, v in (role_def.get("required_revisions", {}) or {}).items()
+            }
+
+            for user in users:
+              roles_by_user[user].add(role_name)
+              user_reqs = requirements_by_user[user]
+              user_awareness = awareness_by_user[user]
+              for required in required_documents:
+                doc_id = extract_doc_id(required)
+                if not doc_id:
+                  continue
+
+                published_info = published.get(doc_id, {}) or {}
+                target_revision = required_revisions.get(doc_id) or str(published_info.get("revision", "")).strip().upper()
+                if not target_revision:
+                  continue
+
+                current = user_reqs.get(doc_id)
+                if not current:
+                  user_reqs[doc_id] = {
+                    "doc_id": doc_id,
+                    "doc_title": str(published_info.get("title", "")).strip(),
+                    "doc_file": str(published_info.get("file", "")).strip(),
+                    "to_revision": target_revision,
+                    "roles": {role_name},
+                  }
+                else:
+                  current["roles"].add(role_name)
+                  if newer_revision(target_revision, str(current.get("to_revision", ""))):
+                    current["to_revision"] = target_revision
+
+              for awareness in awareness_documents:
+                doc_id = extract_doc_id(awareness)
+                if not doc_id or doc_id in user_reqs:
+                  continue
+
+                published_info = published.get(doc_id, {}) or {}
+                target_revision = required_revisions.get(doc_id) or str(published_info.get("revision", "")).strip().upper()
+                if not target_revision:
+                  continue
+
+                current = user_awareness.get(doc_id)
+                if not current:
+                  user_awareness[doc_id] = {
+                    "doc_id": doc_id,
+                    "doc_title": str(published_info.get("title", "")).strip(),
+                    "doc_file": str(published_info.get("file", "")).strip(),
+                    "to_revision": target_revision,
+                    "roles": {role_name},
+                  }
+                else:
+                  current["roles"].add(role_name)
+                  if newer_revision(target_revision, str(current.get("to_revision", ""))):
+                    current["to_revision"] = target_revision
+
+          if training_user:
+            training_user = normalize_login(training_user)
+            if training_user not in users_cfg and training_user not in requirements_by_user and training_user not in trained_by_user:
+              raise SystemExit(
+                f"training_user '{training_user}' is not defined in matrices/training_matrix.yml or "
+                "records/training/training_status.yml"
+              )
+            selected_users = [training_user]
+          else:
+            selected_users = sorted(set(requirements_by_user.keys()) | set(trained_by_user.keys()))
+
+          entries = []
+          for user in selected_users:
+            user_requirements = requirements_by_user.get(user, {})
+            user_awareness = awareness_by_user.get(user, {})
+            user_training = trained_by_user.get(user, {}) or {}
+            has_any_training_entry = bool(user_training)
+            gaps = []
+            awareness_gaps = []
+
+            for doc_id in sorted(user_requirements.keys()):
+              req = user_requirements[doc_id]
+              to_revision = str(req.get("to_revision", "")).strip().upper()
+              if not to_revision:
+                continue
+
+              from_revision = str(user_training.get(doc_id, "UNTRAINED")).strip().upper() or "UNTRAINED"
+              gap = build_doc_gap(
+                doc_id=doc_id,
+                doc_title=str(req.get("doc_title", "")).strip(),
+                doc_file=str(req.get("doc_file", "")).strip(),
+                from_revision=from_revision,
+                to_revision=to_revision,
+                roles=req.get("roles", set()),
+              )
+              if gap:
+                gaps.append(gap)
+
+            for doc_id in additional_doc_ids:
+              if any(g["doc_id"] == doc_id for g in gaps):
+                continue
+              nav = readme_nav.get(doc_id, {}) or {}
+              doc_file = str(nav.get("path", "")).strip()
+              doc_title = str(nav.get("title", "")).strip()
+              to_revision = str(nav.get("revision", "")).strip().upper()
+              if doc_file and (not doc_title or not to_revision):
+                file_text = Path(doc_file).read_text(encoding="utf-8")
+                doc_title = doc_title or parse_title_from_file_content(file_text)
+                to_revision = to_revision or parse_revision_from_file_content(file_text)
+              if not doc_file or not to_revision:
+                raise SystemExit(f"additional_documents entry '{doc_id}' was not found in README navigation or has no published revision")
+              from_revision = str(user_training.get(doc_id, "MANUAL")).strip().upper() or "MANUAL"
+              gap = build_doc_gap(
+                doc_id=doc_id,
+                doc_title=doc_title,
+                doc_file=doc_file,
+                from_revision=from_revision,
+                to_revision=to_revision,
+                roles=[],
+                force_include=True,
+              )
+              if gap:
+                gaps.append(gap)
+
+            for doc_id in sorted(user_awareness.keys()):
+              if any(g["doc_id"] == doc_id for g in gaps):
+                continue
+              req = user_awareness[doc_id]
+              to_revision = str(req.get("to_revision", "")).strip().upper()
+              if not to_revision:
+                continue
+
+              from_revision = str(user_training.get(doc_id, "UNTRAINED")).strip().upper() or "UNTRAINED"
+              gap = build_doc_gap(
+                doc_id=doc_id,
+                doc_title=str(req.get("doc_title", "")).strip(),
+                doc_file=str(req.get("doc_file", "")).strip(),
+                from_revision=from_revision,
+                to_revision=to_revision,
+                roles=req.get("roles", set()),
+              )
+              if gap:
+                awareness_gaps.append(gap)
+
+            if not gaps:
+              continue
+
+            onboarding_mode = not has_any_training_entry
+            role_list = ", ".join(sorted(roles_by_user.get(user, set()))) or "none"
+            profile = users_cfg.get(user, {}) or {}
+            display_login = display_login_by_user.get(user) or user
+            full_name = str(profile.get("full_name", "")).strip() or user
+            manual_mode = bool(additional_doc_ids)
+            title_suffix = ", manual" if manual_mode else ""
+            title = f"TRAINING REQUIRED: {full_name} ({release_tag}{title_suffix})"
+            scope_key = "manual-" + "-".join(additional_doc_ids) if manual_mode else "auto"
+            marker = f"<!-- training-release:user={display_login};release={release_tag};scope={scope_key} -->"
+
+            metadata_lines = [
+              marker,
+              "### Training Release Review",
+              f"- Trigger release: `{release_tag}`",
+              f"- Trigger release URL: {release_url or 'n/a'}",
+              f"- Assignment source ref: `{assignment_ref}`",
+              f"- Training user: `{full_name}` (`@{display_login}`)",
+              f"- Roles in scope: `{role_list}`",
+              f"- Controlled document deltas in scope: `{len(gaps)}`",
+              f"- Optional awareness document deltas in scope: `{len(awareness_gaps)}`",
+              f"- Mode: `{'manual' if manual_mode else ('onboarding' if onboarding_mode else 'incremental')}`",
+              "",
+            ]
+
+            if onboarding_mode:
+              metadata_lines.extend(
+                [
+                  "This user has no prior training status entry. Review the latest published controlled-document revisions assigned by role.",
+                  "",
+                ]
+              )
+
+            if manual_mode:
+              metadata_lines.extend(
+                [
+                  f"Manual additions requested for this dispatch: `{', '.join(additional_doc_ids)}`",
+                  "",
+                ]
+              )
+
+            def render_issue_lines(include_previews: bool):
+              lines = list(metadata_lines)
+              lines.append("### Controlled Document Checklist")
+              if not include_previews:
+                lines.extend(
+                  [
+                    "Diff previews were omitted because the generated issue body would exceed GitHub's size limit. Use the revision-compare links below for the full change set.",
+                    "",
+                  ]
+                )
+              for gap in gaps:
+                lines.extend(
+                  render_gap_lines(
+                    gap,
+                    roles_label="Roles requiring document",
+                    default_roles_text="manual-dispatch",
+                    checkbox=True,
+                    include_preview=include_previews,
+                  )
+                )
+
+              if awareness_gaps:
+                lines.extend(
+                  [
+                    "",
+                    "### Optional Awareness Documents",
+                    "These documents are assigned as awareness-only for one or more roles in scope. Review is recommended, but these items do not block signature request or issue closure.",
+                    "",
+                  ]
+                )
+                for gap in awareness_gaps:
+                  lines.extend(
+                    render_gap_lines(
+                      gap,
+                      roles_label="Roles with awareness assignment",
+                      default_roles_text="awareness-only",
+                      checkbox=False,
+                      include_preview=include_previews,
+                    )
+                  )
+
+              lines.extend(
+                [
+                  "",
+                  "### Required Completion Workflow",
+                  "1. Review each document delta link in this issue and check every checkbox in `Controlled Document Checklist`.",
+                  "2. Optional awareness documents, when listed, are informational and do not need to be checked before signature request.",
+                  "3. When all checkboxes are completed, automation posts a signature request comment for this issue.",
+                  "4. Open the generated signature link, authenticate, and complete signature.",
+                  "5. The issue closes automatically after valid signature attestation is posted.",
+                ]
+              )
+              return lines
+
+            issue_lines = render_issue_lines(include_previews=True)
+            issue_body = "\n".join(issue_lines)
+            if len(issue_body) > GITHUB_ISSUE_BODY_SOFT_LIMIT:
+              issue_lines = render_issue_lines(include_previews=False)
+              issue_body = "\n".join(issue_lines)
+
+            entries.append(
+              {
+                "title": title,
+                "body": issue_body,
+                "labels": ["training", "training-diff"],
+                "assignees": [display_login],
+              }
+            )
+
+          output = os.environ["GITHUB_OUTPUT"]
+          payload_path = str(Path(os.environ["RUNNER_TEMP"]) / "training_diff_entries.json")
+          Path(payload_path).write_text(json.dumps(entries), encoding="utf-8")
+          with open(output, "a", encoding="utf-8") as fh:
+            fh.write(f"entries_path={payload_path}\n")
+          PY
+
+      - name: Open consolidated training diff issues
+        if: steps.gate.outputs.run_training == 'true'
+        uses: actions/github-script@v8
+        env:
+          ENTRIES_PATH: ${{ steps.payload.outputs.entries_path }}
+        with:
+          script: |
+            const fs = require('fs');
+            const entriesPath = String(process.env.ENTRIES_PATH || '').trim();
+            const entries = entriesPath ? JSON.parse(fs.readFileSync(entriesPath, 'utf8')) : [];
+            if (entries.length === 0) {
+              core.info('No training deltas found; no issues created.');
+              return;
+            }
+
+            const openIssues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const openTitles = new Set(openIssues.map((i) => i.title));
+            const openMarkers = new Set();
+            for (const issue of openIssues) {
+              const body = String(issue.body || '');
+              const marker = body.match(/<!--\s*(training-release:[^>]+)\s*-->/i);
+              if (marker && marker[1]) {
+                openMarkers.add(marker[1].toLowerCase().trim());
+              }
+              const legacy = body.match(/<!--\s*training-diff-consolidated:user=([^;>]+);release=([^;>]+)\s*-->/i);
+              if (legacy && legacy[1] && legacy[2]) {
+                openMarkers.add(`training-release:user=${legacy[1]};release=${legacy[2]};scope=auto`.toLowerCase());
+              }
+            }
+
+            for (const entry of entries) {
+              const marker = String((entry.body || '').match(/<!--\s*(training-release:[^>]+)\s*-->/i)?.[1] || '').toLowerCase().trim();
+              if (marker && openMarkers.has(marker)) {
+                core.info(`Skipping existing open issue by marker: ${marker}`);
+                continue;
+              }
+              if (openTitles.has(entry.title)) {
+                core.info(`Skipping existing open issue: ${entry.title}`);
+                continue;
+              }
+
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: entry.title,
+                body: entry.body,
+                labels: entry.labels,
+                assignees: entry.assignees || [],
+              });
+              openTitles.add(entry.title);
+              if (marker) {
+                openMarkers.add(marker);
+              }
+            }
