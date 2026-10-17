@@ -10,6 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: write
   issues: write
   pull-requests: write
@@ -89,9 +90,11 @@ jobs:
               issue_number: issue.number,
               per_page: 100,
             });
-            // Pharma-QMS: only requests and attestations posted by the QMS bot (workflow 2.5) count.
-            const automationBotLogins = new Set(['zeuthen-pharma-qms-bot', 'zeuthen-pharma-qms-bot[bot]', 'github-actions[bot]']);
-            const botComments = comments.filter((c) => automationBotLogins.has(String(c.user?.login || '').toLowerCase()));
+            // Pharma-QMS: only requests and attestations posted by the QMS GitHub App count
+            // (not github-actions[bot], which any branch workflow could post as).
+            const isQmsAppComment = (c) => String(c.user?.login || '').toLowerCase() === 'zeuthen-pharma-qms-bot[bot]' &&
+              (!c.performed_via_github_app || String(c.performed_via_github_app.slug || '').toLowerCase() === 'zeuthen-pharma-qms-bot');
+            const botComments = comments.filter(isQmsAppComment);
             const requestComments = botComments
               .filter((c) => String(c.body || '').includes('<!-- training-signature-request -->'))
               .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0));
@@ -317,11 +320,21 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
       - name: Close signed training issues and publish immutable release
         uses: actions/github-script@v8
+        env:
+          ACTIONS_READ_TOKEN: ${{ github.token }}
         with:
           github-token: ${{ steps.app_token.outputs.token }}
           script: |
+            const fs = require('fs');
+            const crypto = require('crypto');
+            const evidence = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/signature-evidence.js`);
+            const actionsClient = getOctokit(process.env.ACTIONS_READ_TOKEN);
+            const defaultBranch = String(context.payload.repository?.default_branch || 'main');
             const ACTIVE_LABELS = {
               outstanding: 'signature/outstanding',
               complete: 'signature/complete',
@@ -337,9 +350,9 @@ jobs:
             }
 
             const checklistSectionRegex = /### (?:Controlled Document Checklist|SOP Delta Checklist)([\s\S]*?)(?:\n###\s|\n##\s|$)/i;
-            // Pharma-QMS: only bot-posted requests and attestations (workflow 2.5) are evidence.
-            const automationBotLogins = new Set(['zeuthen-pharma-qms-bot', 'zeuthen-pharma-qms-bot[bot]', 'github-actions[bot]']);
-            const isBotComment = (c) => automationBotLogins.has(String(c.user?.login || '').toLowerCase());
+            // Pharma-QMS: only QMS-App-posted requests and attestations are evidence, and each
+            // attestation's 2.5 run and Sigstore signature are verified before closure.
+            const isBotComment = evidence.isQmsAppComment;
             function parseRequestContext(text) {
               const m = String(text || '').match(/<!--\s*SIGNATURE_REQUEST_CONTEXT_V1\s*([\s\S]*?)-->/i);
               if (!m || !m[1]) return null;
@@ -427,7 +440,7 @@ jobs:
                 per_page: 100,
               });
 
-              const alreadyCompleted = comments.some((c) => String(c.body || '').includes('<!-- training-signature-complete -->'));
+              const alreadyCompleted = comments.some((c) => isBotComment(c) && String(c.body || '').includes('<!-- training-signature-complete -->'));
               if (alreadyCompleted) { skippedCount += 1; continue; }
 
               const markerMatch = issueBody.match(/training-release:user=([A-Za-z0-9-]+)/i)
@@ -444,6 +457,15 @@ jobs:
               if (!requestContext) { skippedCount += 1; continue; }
               const expectedHash = String(requestContext.hash || '').trim().toLowerCase();
               const expectedMeaning = String(requestContext.meaning || 'Completed QMS Training Review').trim();
+              // Refuse to close when the issue content changed after the signed request.
+              const repoFullName = `${context.repo.owner}/${context.repo.repo}`;
+              const bodySha = crypto.createHash('sha256').update(issueBody).digest('hex');
+              const currentHash = crypto.createHash('sha256').update(`${repoFullName}:training_issue:${issue.number}:${bodySha}`).digest('hex');
+              if (currentHash !== expectedHash) {
+                core.warning(`Issue #${issue.number} content changed after the signature request (hash ${currentHash} != ${expectedHash}); not closing.`);
+                skippedCount += 1;
+                continue;
+              }
 
               const candidateComments = comments
                 .filter((c) => {
@@ -468,6 +490,26 @@ jobs:
                 if (!expectedSigner || signer !== expectedSigner) continue;
                 if (String(parsed.target_hash || parsed.commit_hash || '').toLowerCase() !== expectedHash) continue;
                 if (String(parsed.meaning_of_signature || '').trim() !== expectedMeaning) continue;
+
+                const verified = await evidence.verifySignatureEvidence({
+                  actionsClient,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  repositoryFull: String(process.env.GITHUB_REPOSITORY || repoFullName),
+                  defaultBranch,
+                  comment: c,
+                  attestation: parsed,
+                  signer,
+                  recordNumber: issue.number,
+                  prefix: `signer_attestation_${issue.number}`,
+                  exec,
+                  fs,
+                  core,
+                });
+                if (!verified.ok) {
+                  core.warning(`Attestation ${c.html_url} on issue #${issue.number} rejected: ${verified.reason}`);
+                  continue;
+                }
 
                 selected = parsed;
                 selectedCommentUrl = String(c.html_url || '');
@@ -534,6 +576,7 @@ jobs:
                   'Assets:',
                   '- `signed_attestation.json`',
                   '- `training_completion_manifest.json`',
+                  '- `signer_attestation.json` / `.sig` / `.pem` (signed manifest, Sigstore signature and certificate, verified)',
                 ].join('\n'),
                 draft: true,
                 prerelease: false,
@@ -550,6 +593,21 @@ jobs:
                   'content-length': Buffer.byteLength(bundleJson),
                 },
               });
+
+              for (const ext of ['json', 'sig', 'pem']) {
+                const content = fs.readFileSync(`signer_attestation_${issue.number}.${ext}`);
+                await github.rest.repos.uploadReleaseAsset({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  release_id: release.data.id,
+                  name: `signer_attestation.${ext}`,
+                  data: content,
+                  headers: {
+                    'content-type': ext === 'json' ? 'application/json' : 'text/plain',
+                    'content-length': content.length,
+                  },
+                });
+              }
 
               const completionContext = {
                 version: 1,

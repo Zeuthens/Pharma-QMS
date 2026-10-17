@@ -36,7 +36,7 @@ qms_tools:
     evidence_reference: "TODO: records/validation/ validation record under SOP-006"
     change_control_required: true
     criticality: "high"
-    notes: "Training-issue and QMS-release signature paths must be validated under SOP-006 before first use (see docs/architecture/README.md section 11)."
+    notes: "Training-issue and QMS-release signature paths, the run and Sigstore verification in 3.2 / 2.7, and the authentication rationale (GitHub session with enforced 2FA plus typed full legal name, no separate PIN) must be validated under SOP-006 before first use (see docs/architecture/README.md section 11)."
 ai_development_tools:
   - tool_id: DEV-TOOL-001
     name: Claude Code

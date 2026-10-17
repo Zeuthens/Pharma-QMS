@@ -61,6 +61,9 @@ service references, git-native signature routing, adoption tooling):
 - tools/check_adoption_readiness.sh
 - tools/qms_distribution.py
 - tools/validate_github_qms_export.py
+The following files were added by Zeuthen on 2026-10-17 (not from upstream):
+- .github/scripts/signature-evidence.js
+- .github/scripts/signature-evidence.test.js
 Files under .github/, scripts/ and tools/ not listed above are unmodified
 upstream copies.
 

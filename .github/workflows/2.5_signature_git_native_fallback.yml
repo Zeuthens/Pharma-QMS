@@ -1,6 +1,7 @@
 # Modified by Zeuthen, 2026-10-17
 name: 2.5 Manual Signature Attestation Fallback
-run-name: 2.5 Manual Signature Fallback
+# Pharma-QMS: the record number in run-name lets 3.2 / 2.7 bind a run to its record.
+run-name: 2.5 Manual Signature Fallback #${{ inputs.pr_number }}
 
 on:
   workflow_dispatch:
@@ -23,7 +24,14 @@ env:
 
 jobs:
   sign_and_attest:
-    if: github.event_name == 'workflow_dispatch'
+    # Pharma-QMS: refuse dispatches from other branches. This guards against stale or
+    # accidental refs only (a branch can edit this file); forged runs are rejected by
+    # the 3.2 / 2.7 reconcilers, which verify the run and the Sigstore certificate
+    # identity (2.5 on the default branch). Keep QMS_BOT_APP_* in an environment
+    # restricted to the default branch (README "Adoption status").
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     steps:
       - name: Create GitHub App token for signature processing
@@ -35,15 +43,20 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: |
             ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-issues: write
+          permission-pull-requests: read
 
-      # Pharma-QMS: signer policy data is read from the default branch, never from the
-      # dispatched ref. Training-issue signers are checked against the training matrix;
+      # Pharma-QMS: signer policy data and the shared signature helpers are read from the
+      # default branch. Training-issue signers are checked against the training matrix;
       # QMS-release signers against the signer registry (see docs/architecture section 11).
       - name: Checkout signer policy from default branch
         uses: actions/checkout@v5
         with:
           ref: ${{ github.event.repository.default_branch }}
-          sparse-checkout: matrices
+          sparse-checkout: |
+            matrices
+            .github/scripts
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -141,8 +154,7 @@ jobs:
               const actor = (context.actor || '').toLowerCase();
               const repoFull = `${context.repo.owner}/${context.repo.repo}`;
               const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex');
-              const signatureBotLogins = new Set(['zeuthen-pharma-qms-bot', 'zeuthen-pharma-qms-bot[bot]', 'github-actions[bot]']);
-              const isBotComment = (c) => signatureBotLogins.has(String(c.user?.login || '').toLowerCase());
+              const { isQmsAppComment: isBotComment } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/signature-evidence.js`);
               const parseRequestContext = (body) => {
                 const match = String(body || '').match(/<!--\s*SIGNATURE_REQUEST_CONTEXT_V1\s*([\s\S]*?)-->/i);
                 if (!match || !match[1]) return null;
@@ -315,7 +327,12 @@ jobs:
                   core.setFailed(`Release ${releaseTag} is missing qms_release_manifest.json or qms_release_snapshot.tgz.`);
                   return;
                 }
-                const sourceSha = String(JSON.parse(manifestAsset.data.toString('utf8')).source_sha || '').trim();
+                const releaseManifest = JSON.parse(manifestAsset.data.toString('utf8'));
+                if (Number(releaseManifest.release_planning_issue) !== issueNumber) {
+                  core.setFailed(`Release ${releaseTag} manifest names planning issue #${releaseManifest.release_planning_issue}, not #${issueNumber}.`);
+                  return;
+                }
+                const sourceSha = String(releaseManifest.source_sha || '').trim();
                 // Same target material and canonical JSON as 2.7 (sorted keys, no spaces).
                 const material = {
                   attestation_scope: 'qms_release_package',
@@ -526,10 +543,12 @@ jobs:
               issue_number: prNumber,
               per_page: 100,
             });
+            // Pharma-QMS: only signature requests posted by the QMS GitHub App count.
+            const { isQmsAppComment } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/signature-evidence.js`);
             const requestComments = comments
               .filter((c) => {
                 const body = c.body || '';
-                return body.includes('<!-- signature-native-signature-request -->') || body.includes('<!-- part11-native-signature-request -->');
+                return isQmsAppComment(c) && (body.includes('<!-- signature-native-signature-request -->') || body.includes('<!-- part11-native-signature-request -->'));
               })
               .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
             if (requestComments.length === 0) {
@@ -760,9 +779,19 @@ jobs:
           github-token: ${{ steps.app_token.outputs.token }}
           script: |
             const fs = require('fs');
+            const crypto = require('crypto');
             const prNumber = Number(process.env.PR_NUMBER);
             const targetHash = process.env.TARGET_HASH;
-            const attestation = JSON.parse(fs.readFileSync('signed_attestation.json', 'utf8'));
+            const signedBytes = fs.readFileSync('signed_attestation.json');
+            const attestation = JSON.parse(signedBytes.toString('utf8'));
+            // Pharma-QMS: carry the cosign keyless signature and certificate in the comment
+            // so 3.2 / 2.7 can verify them and attach them to the evidence release.
+            const sigstoreBlock = {
+              signed_file: 'signed_attestation.json',
+              signed_file_sha256: crypto.createHash('sha256').update(signedBytes).digest('hex'),
+              signature: fs.readFileSync('signed_attestation.sig', 'utf8').trim(),
+              certificate: fs.readFileSync('signed_attestation.pem', 'utf8').trim(),
+            };
             const artifactLine = process.env.UPLOAD_ATTESTATION_ARTIFACT === 'true'
               ? `Run artifact: \`${process.env.ARTIFACT_NAME}\``
               : 'Run artifact: disabled (`UPLOAD_ATTESTATION_ARTIFACT=false`)';
@@ -783,6 +812,9 @@ jobs:
               '```json',
               JSON.stringify(attestation, null, 2),
               '```',
+              '<!-- SIGSTORE_SIGNATURE_V1',
+              JSON.stringify(sigstoreBlock),
+              '-->',
             ].join('\n');
 
             await github.rest.issues.createComment({
