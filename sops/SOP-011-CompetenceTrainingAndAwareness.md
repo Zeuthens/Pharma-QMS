@@ -1,0 +1,107 @@
+---
+sop_id: SOP-011
+title: Competence, Training, and Awareness
+revision: R13
+revision_date: 2026-10-17
+status: Published
+owner_role: qa_lead
+approver_role: management_representative
+related_issue: "TODO: link the Pharma-QMS adoption issue"
+---
+## 1. Purpose
+Define how Zeuthen establishes competence requirements, assigns training, verifies completion, maintains awareness, and preserves organizational knowledge needed for quality-relevant responsibilities.
+
+## 2. Scope
+Applies to all personnel and contractors performing tasks that can affect product quality, regulatory compliance, or QMS record integrity.
+
+## 3. Inputs
+- Role definitions and required controlled-document set in `matrices/training_matrix.yml`
+- New or updated QM/SOP revisions
+- Onboarding and role-change events
+- Lessons learned, governance decisions, audit/CAPA outputs, and process knowledge needed to operate the QMS
+
+## 4. Outputs
+- Assigned training tasks/issues
+- Completed and signed training records
+- Organizational knowledge updates or knowledge-transfer actions where needed
+- Current training status register and auditor-facing training status report
+
+## 5. Roles and Responsibilities
+| Role | Responsibilities |
+|---|---|
+| QA Lead | Owns training matrix and training process effectiveness. |
+| Role Leads | Confirm assigned personnel complete required training for the roles they assign or supervise. |
+| Trainees | Review material, acknowledge understanding, and complete required signoff. |
+| Management Representative | Approves training process adequacy and escalations. |
+
+## 6. Procedure
+
+### 6.1 Competence Definition
+1. Define role-specific required controlled documents in `matrices/training_matrix.yml`.
+2. Competence shall be evaluated based on appropriate education, training, skills, and experience, and shall not be assumed solely based on training completion.
+3. Avoid broad over-assignment; include only the controlled documents needed for role responsibilities.
+4. Any user who changes code, prepares builds, or executes controlled verification/validation activities must hold the `engineer` role at minimum.
+5. Any user accountable for lifecycle planning, release readiness, or technical approval decisions must also hold the `engineering_lead` role.
+6. Any user accountable for usability-engineering records, formative/summative evaluation planning, or user-profile/use-environment definition must also hold the `usability_lead` role.
+
+### 6.2 Triggering Training
+Training is required when:
+1. New user is onboarded to one or more roles.
+2. User changes role.
+3. QM or SOP revision affects assigned role responsibilities.
+4. CAPA/audit identifies competence gaps.
+
+### 6.3 Training Assignment and Review
+1. Automation opens training issues when mapped QM or SOP documents are revised.
+2. Training is executed through consolidated per-user training issues rather than review-only onboarding PRs.
+3. Trainee acknowledgement and electronic-signature evidence are captured per workflow rules.
+
+### 6.4 Completion and Evidence
+1. Training completion is logged in the designated product/study record repository.
+2. For formal records, immutable package is published to the designated product/study record repository.
+3. Personnel shall complete required training before performing activities that affect product quality or compliance.
+4. Overdue training is escalated to QA Lead and management representative.
+
+### 6.5 Effectiveness Verification
+1. Where applicable, training effectiveness shall be verified through assessment, supervision, or review of work outputs.
+2. Use audit/CAPA feedback to improve training assignments and content.
+
+### 6.6 Organizational Knowledge
+1. Identify knowledge needed to operate QMS processes and achieve product or service conformity, including controlled procedures, lessons learned, support decisions, supplier knowledge, validation rationale, and release evidence.
+2. Preserve required knowledge in approved repositories of record, controlled documents, training materials, governance records, or linked objective evidence.
+3. When roles, suppliers, tools, or processes change, assess whether knowledge transfer, training updates, or document changes are needed before the affected activity continues.
+
+## 7. Required Records
+- Training matrix revisions
+- Training assignment issues
+- Training status register, status report, and signed attestations
+- Knowledge-transfer or lessons-learned records where required by governance, audit, CAPA, or role change
+
+## 8. Traceability
+| Standard Clause | Control in this SOP |
+|---|---|
+| ISO 13485:2016 6.2 | Defines competence determination, training, awareness, and record maintenance. |
+| ISO 9001:2015 7.1.6, 7.2, 7.3 | Defines organizational knowledge, competence, awareness, and related evidence controls. |
+
+## 9. Related Controlled Documents
+- SOP-001 Document and Record Control
+- QM-001 Quality Manual
+- SOP-005 QMS Governance
+
+## 10. Revision History
+| Revision | Revision Date | Change Summary |
+|---|---|---|
+| R00 | 2026-03-02 | Initial full release. |
+| R01 | 2026-03-05 | Removed repository-specific naming and aligned training completion plus immutable publication wording to designated product/study record repositories. |
+| R02 | 2026-03-07 | Removed the deprecated review-only onboarding PR path and aligned training execution wording to the consolidated issue-based signature flow. |
+| R03 | 2026-03-07 | Added explicit minimum training role expectations for engineers and normalized manager language to role owners for small teams. |
+| R04 | 2026-03-07 | Renamed accountable roles to the simplified `*_lead` taxonomy and aligned training language to that naming. |
+| R05 | 2026-03-07 | Added explicit training-role criteria for `usability_lead` and aligned the matrix to required-versus-awareness training scope. |
+| R06 | 2026-03-08 | Generalized the training matrix from SOP-only assignments to required controlled documents and added the standalone Quality Manual to role-based training. |
+| R07 | 2026-03-10 | Replaced the legacy user training log with a generated training status register and auditor-facing training status report derived from signed training issue evidence. |
+| R08 | 2026-03-18 | Removed top-table standards clause metadata; normative references remain in the Traceability section. |
+| R09 | 2026-03-25 | Added competence-basis criteria, pre-task training completion expectation, and effectiveness-verification wording based on assessment or supervision. |
+| R10 | 2026-04-27 | Renamed YAML metadata field `effective_date` to `revision_date` to align controlled-document metadata with the tag-based publication model. The effective date is derived from the published QMS release tag rather than from the document front matter. |
+| R11 | 2026-05-04 | Standardize standards citations to specific versions. |
+| R12 | 2026-05-26 | Added ISO 9001 organizational-knowledge controls and knowledge-transfer triggers. |
+| R13 | 2026-10-17 | Adopted into Pharma-QMS for Zeuthen from the upstream baseline release QMS-2026-07-09-R005; tailored for the App with AI profile; pending approval. |

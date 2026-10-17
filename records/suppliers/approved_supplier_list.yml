@@ -1,0 +1,38 @@
+version: 1
+last_updated: "TODO: set at first supplier review"
+owner_role: management_representative
+# Seeded from the bootstrap example. Entries below are placeholders pending
+# supplier evaluation under SOP-010; none is approved yet.
+suppliers:
+  - supplier_id: SUP-0001
+    supplier_name: GitHub, Inc.
+    service_description: Source control, issue/PR workflow, GitHub Actions automation, and signature attestation platform for the QMS and product repositories
+    criticality: "TODO: assess (expected critical)"
+    approval_status: "TODO: pending supplier evaluation"
+    approved_on: ""
+    next_review_due: ""
+    quality_agreement_reference: "TODO"
+  - supplier_id: SUP-0002
+    supplier_name: Anthropic
+    service_description: "TODO: confirm scope (Claude Code development tool; any Claude model API used inside IMPD automation)"
+    criticality: "TODO: assess"
+    approval_status: "TODO: pending supplier evaluation (include AI-specific and data-processing terms)"
+    approved_on: ""
+    next_review_due: ""
+    quality_agreement_reference: "TODO"
+  - supplier_id: SUP-0003
+    supplier_name: Microsoft (Azure)
+    service_description: "TODO: confirm scope of Azure services used"
+    criticality: "TODO: assess"
+    approval_status: "planned, not yet used (local mock-up uses only GitHub and Anthropic); TODO: evaluate under SOP-010 before first use"
+    approved_on: ""
+    next_review_due: ""
+    quality_agreement_reference: "TODO"
+  - supplier_id: SUP-0004
+    supplier_name: Amazon Web Services (AWS)
+    service_description: "TODO: confirm scope of AWS services used"
+    criticality: "TODO: assess"
+    approval_status: "planned, not yet used (local mock-up uses only GitHub and Anthropic); TODO: evaluate under SOP-010 before first use"
+    approved_on: ""
+    next_review_due: ""
+    quality_agreement_reference: "TODO"

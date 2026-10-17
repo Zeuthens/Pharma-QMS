@@ -1,0 +1,383 @@
+# Modified by Zeuthen, 2026-10-17
+name: 1.3 Auto Merge After Assigned Approvals
+run-name: 1.3 Auto-Merge Gate
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, converted_to_draft, ready_for_review]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto_merge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout base ref (trusted) for the shared role matcher
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Create GitHub App token for PR merge/comment
+        id: app_token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.QMS_BOT_APP_ID }}
+          private-key: ${{ secrets.QMS_BOT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+
+      - name: Enable auto-merge when assigned reviewers approved
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ steps.app_token.outputs.token }}
+          script: |
+            let matchRoleSlots = null;
+            try {
+              matchRoleSlots = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/role-coverage.js`).matchRoleSlots;
+            } catch (error) {
+              core.warning(`Shared role matcher is not available on the trusted base ref yet: ${error.message}. Deferring to the default-branch auto-merge gate for this bootstrap PR.`);
+              return;
+            }
+            const pr = context.payload.pull_request;
+            if (!pr) {
+              core.info('No pull request context; skipping.');
+              return;
+            }
+            if (pr.state !== 'open') {
+              core.info(`PR #${pr.number} is not open; skipping.`);
+              return;
+            }
+            const labels = (pr.labels || []).map((l) => String(l.name || '').toLowerCase());
+            if (labels.includes('review-only')) {
+              core.info(`PR #${pr.number} is marked review-only; auto-merge skipped.`);
+              return;
+            }
+
+            const body = pr.body || '';
+            const sigMatch = body.match(/\*\*Required Signatures:\*\*\s*([^\n]+)/i);
+            let requiredSignatures = sigMatch ? Number.parseInt(sigMatch[1].trim(), 10) : 1;
+            if (!Number.isInteger(requiredSignatures) || requiredSignatures < 1) {
+              requiredSignatures = 1;
+            }
+            const baseRequiredReviewerApprovals = Math.max(0, requiredSignatures - 1);
+
+            const fresh = (await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+            })).data;
+            if (fresh.state !== 'open') {
+              core.info(`PR #${pr.number} is not open; skipping.`);
+              return;
+            }
+            if (fresh.draft) {
+              if (fresh.auto_merge) {
+                try {
+                  await github.graphql(
+                    `mutation($pullRequestId: ID!) {
+                      disablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId}) {
+                        pullRequest { number }
+                      }
+                    }`,
+                    { pullRequestId: fresh.node_id }
+                  );
+                  core.info(`Disabled auto-merge for draft PR #${pr.number}.`);
+                } catch (error) {
+                  core.warning(`Could not disable auto-merge for draft PR #${pr.number}: ${error.message}`);
+                }
+              } else {
+                core.info(`PR #${pr.number} is draft; auto-merge skipped.`);
+              }
+              return;
+            }
+            const disableAutoMerge = async (reason) => {
+              if (!fresh.auto_merge) {
+                core.info(reason);
+                return;
+              }
+              try {
+                await github.graphql(
+                  `mutation($pullRequestId: ID!) {
+                    disablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId}) {
+                      pullRequest { number }
+                    }
+                  }`,
+                  { pullRequestId: fresh.node_id }
+                );
+                core.info(`${reason} Disabled auto-merge for PR #${pr.number}.`);
+              } catch (error) {
+                core.warning(`Could not disable auto-merge for PR #${pr.number}: ${error.message}`);
+              }
+            };
+            const checklistFiles = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+            const checklistPaths = checklistFiles.map((f) => String(f.filename || ''));
+            const requiresEvidenceChecklist = checklistPaths.some((path) => path.startsWith('records/verification_validation/runs/')) ||
+              /^##\s+Evidence Review Package\b/mi.test(fresh.body || '');
+            const evidenceChecklistStatus = (body) => {
+              const lines = String(body || '').split(/\r?\n/);
+              const start = lines.findIndex((line) => /^##\s+Evidence Review Checklist\b/i.test(line));
+              if (start < 0) return { present: false, complete: true, total: 0, open: [] };
+              const next = lines.findIndex((line, index) => index > start && /^##\s+\S/.test(line));
+              const section = lines.slice(start + 1, next < 0 ? undefined : next).join('\n');
+              const items = Array.from(section.matchAll(/^\s*-\s*\[( |x|X)\]\s+(.+)$/gm));
+              const open = items
+                .filter((item) => item[1] === ' ')
+                .map((item) => String(item[2] || '').trim())
+                .filter(Boolean);
+              return {
+                present: true,
+                complete: items.length > 0 && open.length === 0,
+                total: items.length,
+                open,
+              };
+            };
+            const checklist = evidenceChecklistStatus(fresh.body || '');
+            if (requiresEvidenceChecklist && !checklist.present) {
+              await disableAutoMerge(`PR #${pr.number} is an evidence-package PR but has no Evidence Review Checklist section.`);
+              core.setFailed('Evidence Review Checklist must be present and complete in the PR body before auto-merge can be enabled.');
+              return;
+            }
+            if (checklist.present && !checklist.complete) {
+              await disableAutoMerge(
+                checklist.total === 0
+                  ? `PR #${pr.number} has an Evidence Review Checklist section but no checkable items.`
+                  : `PR #${pr.number} Evidence Review Checklist is incomplete; ${checklist.open.length} unchecked item(s) remain.`
+              );
+              core.setFailed('Evidence Review Checklist must be completed in the PR body before auto-merge can be enabled.');
+              return;
+            }
+            const headSha = (fresh.head?.sha || '').toLowerCase();
+            const author = String(fresh.user?.login || '').toLowerCase();
+            const requested = (fresh.requested_reviewers || []).map((r) => String(r.login || '').toLowerCase()).filter(Boolean);
+            const marker = '<!-- signature-auto-reviewers -->';
+            const legacyMarker = '<!-- part11-auto-reviewers -->';
+            const automationBotLogins = new Set(['zeuthen-pharma-qms-bot', 'zeuthen-pharma-qms-bot[bot]', 'github-actions[bot]']);
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              per_page: 100,
+            });
+            const markerComments = comments
+              .filter((c) => ((c.body || '').includes(marker) || (c.body || '').includes(legacyMarker)) && automationBotLogins.has(String(c.user?.login || '').toLowerCase()))
+              .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+            const latestMarkerBody = markerComments.length > 0 ? String(markerComments[markerComments.length - 1].body || '') : '';
+            const parseAssignedReviewers = (body) => {
+              const lineMatch = String(body || '').match(/Assigned reviewers:\s*([^\n]+)/i);
+              return lineMatch
+                ? Array.from((lineMatch[1] || '').matchAll(/@([A-Za-z0-9-]+)/g)).map((m) => m[1].toLowerCase())
+                : [];
+            };
+            const parseBooleanLine = (body, label) => {
+              const match = String(body || '').match(new RegExp(`${label}:\\s*\`?(yes|no)\`?`, 'i'));
+              return match ? match[1].toLowerCase() === 'yes' : null;
+            };
+            const parseIntegerLine = (body, label) => {
+              const match = String(body || '').match(new RegExp(`${label}:\\s*\`?(\\d+)\`?`, 'i'));
+              return match ? Number.parseInt(match[1], 10) : null;
+            };
+            const parseRoleCoverageData = (body) => {
+              const m = String(body || '').match(/<!-- role-coverage-data:\s*(\{[\s\S]*?\})\s*-->/);
+              if (!m) return null;
+              try {
+                const d = JSON.parse(m[1]);
+                if (!Array.isArray(d.sequence) || typeof d.members !== 'object' || d.members === null) return null;
+                return {
+                  sequence: d.sequence.map((roleId) => String(roleId || '')).filter(Boolean),
+                  members: Object.fromEntries(
+                    Object.entries(d.members).map(([roleId, members]) => [
+                      roleId,
+                      Array.isArray(members) ? members.map((login) => String(login || '').toLowerCase()).filter(Boolean) : [],
+                    ]),
+                  ),
+                };
+              } catch (_error) {
+                return null;
+              }
+            };
+
+            let requiredReviewerApprovals = null;
+            let reviewerPool = [];
+            let policySource = '';
+            let coapprovalReasons = [];
+            if (latestMarkerBody) {
+              const explicitApprovalRequired = parseBooleanLine(latestMarkerBody, 'Reviewer approval required for merge');
+              const explicitRequiredApprovals = parseIntegerLine(latestMarkerBody, 'Required reviewer approvals for merge');
+              if (explicitApprovalRequired !== null || explicitRequiredApprovals !== null) {
+                requiredReviewerApprovals = explicitApprovalRequired === false
+                  ? 0
+                  : explicitRequiredApprovals ?? Math.max(1, baseRequiredReviewerApprovals);
+                reviewerPool = Array.from(new Set([
+                  ...parseAssignedReviewers(latestMarkerBody),
+                  ...requested,
+                ]));
+                policySource = 'assignment comment';
+              }
+            }
+            if (requiredReviewerApprovals === null) {
+              const changedFiles = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                per_page: 100,
+              });
+              const paths = changedFiles.map((f) => String(f.filename || ''));
+              const hasPath = (prefix) => paths.some((p) => p.startsWith(prefix));
+              if (hasPath('qm/') || hasPath('sops/')) coapprovalReasons.push('controlled documents (/qm, /sops)');
+              if (hasPath('records/')) coapprovalReasons.push('records (/records)');
+              if (hasPath('records/management-reviews/')) coapprovalReasons.push('management review records (/records/management-reviews)');
+              if (hasPath('matrices/')) coapprovalReasons.push('matrix/role files (/matrices)');
+              const policyMinimumApprovals = coapprovalReasons.length > 0 ? 1 : 0;
+              requiredReviewerApprovals = Math.max(baseRequiredReviewerApprovals, policyMinimumApprovals);
+              policySource = 'path fallback';
+            }
+            if (requiredReviewerApprovals > 0 && reviewerPool.length === 0 && policySource === 'assignment comment') {
+              core.setFailed(`PR #${pr.number} requires reviewer approval for merge, but the assigned reviewer pool is empty in the automation comment.`);
+              return;
+            }
+            if (requiredReviewerApprovals === 0) {
+              if (fresh.auto_merge) {
+                try {
+                  await github.graphql(
+                    `mutation($pullRequestId: ID!) {
+                      disablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId}) {
+                        pullRequest { number }
+                      }
+                    }`,
+                    { pullRequestId: fresh.node_id }
+                  );
+                  core.info(`Disabled auto-merge for PR #${pr.number}; reviewer approval is not required, so manual merge by a single expert is expected.`);
+                } catch (error) {
+                  core.warning(`Could not disable auto-merge for PR #${pr.number}: ${error.message}`);
+                }
+              } else {
+                core.info(`PR #${pr.number} does not require reviewer approval; auto-merge remains disabled and manual merge by a single expert is expected.`);
+              }
+              return;
+            }
+
+            const reviews = await github.paginate(github.rest.pulls.listReviews, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+
+            const latestReviewByUser = new Map();
+            for (const review of reviews) {
+              const login = (review.user?.login || '').trim();
+              if (!login) continue;
+              latestReviewByUser.set(login.toLowerCase(), {
+                state: String(review.state || '').toUpperCase(),
+                commitId: String(review.commit_id || '').toLowerCase(),
+              });
+            }
+
+            const approvedOnHead = Array.from(latestReviewByUser.entries())
+              .filter(([login, review]) => login !== author && review.state === 'APPROVED' && review.commitId === headSha)
+              .map(([login]) => login);
+            const stale = Array.from(latestReviewByUser.entries())
+              .filter(([login, review]) => login !== author && review.state === 'APPROVED' && review.commitId !== headSha)
+              .map(([login]) => login);
+
+            if (requiredReviewerApprovals > 0) {
+              const roleCoverage = parseRoleCoverageData(latestMarkerBody);
+              if (!roleCoverage || roleCoverage.sequence.length === 0) {
+                core.info(
+                  'Signer-role coverage data is missing from the reviewer-assignment marker; auto-merge will not use the legacy flat reviewer-pool count. Re-run 1.1 by pushing a commit or editing the PR.',
+                );
+                return;
+              }
+              const missingMembershipForRoleIds = roleCoverage.sequence.filter((roleId) => !(roleId in roleCoverage.members));
+              if (missingMembershipForRoleIds.length > 0) {
+                core.info(
+                  `Signer-role coverage data is incomplete for role(s): ${missingMembershipForRoleIds.join(', ')}. Auto-merge skipped.`,
+                );
+                return;
+              }
+              const coverage = matchRoleSlots(
+                roleCoverage.sequence,
+                roleCoverage.members,
+                author,
+                approvedOnHead,
+                requiredReviewerApprovals,
+              );
+              if (!coverage.covered) {
+                if (stale.length > 0) {
+                  core.info(`Found stale approvals on older commits from: ${stale.map((x) => '@' + x).join(', ')}`);
+                }
+                core.info(
+                  `Waiting for signer-role coverage on current head. Missing role(s): ${coverage.missingRoleIds.join(', ')}. Non-author approvals on head: ${approvedOnHead.map((x) => '@' + x).join(', ') || 'none'}.`
+                );
+                return;
+              }
+            }
+
+            if (fresh.auto_merge) {
+              core.info(`Auto-merge already enabled for PR #${pr.number}.`);
+              return;
+            }
+
+            try {
+              await github.graphql(
+                `mutation($pullRequestId: ID!) {
+                  enablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId, mergeMethod: SQUASH}) {
+                    pullRequest { number }
+                  }
+                }`,
+                { pullRequestId: fresh.node_id }
+              );
+              core.info(`Enabled auto-merge for PR #${pr.number}.`);
+            } catch (error) {
+              core.warning(`Could not enable auto-merge via GraphQL: ${error.message}`);
+              const isExpectedMergeWait = (message) => {
+                const text = String(message || '').toLowerCase();
+                return [
+                  'required status checks are expected',
+                  'required status checks is expected',
+                  'required status checks are failing',
+                  'required status check is failing',
+                  'required status check is expected',
+                  'required approving review',
+                  'changes have been requested',
+                  'pull request is not mergeable',
+                  'pull request is behind',
+                  'base branch was modified',
+                  'merge conflict',
+                  'head branch was modified',
+                  'not all requirements have been met',
+                ].some((needle) => text.includes(needle));
+              };
+              try {
+                await github.rest.pulls.merge({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pr.number,
+                  merge_method: 'squash',
+                });
+                core.info(`Merged PR #${pr.number} directly.`);
+                core.info(`Signature request will be posted by Issue-to-PR post-merge workflow for PR #${pr.number}.`);
+              } catch (mergeError) {
+                if (isExpectedMergeWait(mergeError.message)) {
+                  core.info(
+                    `PR #${pr.number} is approved but not mergeable yet: ${mergeError.message}. Auto-merge gate remains waiting; this is not an automation failure.`
+                  );
+                  return;
+                }
+                core.setFailed(
+                  `PR #${pr.number} could not be merged by automation: ${mergeError.message}. Verify GitHub App permissions, repository action settings, and branch protection.`
+                );
+              }
+            }
+            

@@ -1,0 +1,71 @@
+version: 2
+# Pharma-QMS company profile (Zeuthen). Seeded from the bootstrap example at adoption.
+# Values marked TODO are not yet known and must be completed before QMS approval;
+# tools/check_adoption_readiness.sh blocks while TODO markers remain in this file.
+company:
+  legal_name: "Zeuthen"
+  legal_form: "TODO: confirm legal form (for example sole proprietorship or ApS)"
+  cvr_number: "TODO: add Danish CVR number"
+  registered_address:
+    street: "TODO: add registered street address"
+    postal_code: "TODO: add postal code"
+    city: "TODO: add city"
+    country: "Denmark"  # TODO: confirm
+  qms_owner:
+    full_name: "TODO: confirm full legal name for electronic signatures (candidate: Ulrik Ledgaard Zeuthen)"
+    github_login: "Zeuthens"
+  operating_model: "small team, remote"  # TODO: confirm
+  regulatory_role: "Software supplier and licensor of a non-device software product with AI features used by customers in a GxP-regulated pharmaceutical context"
+  product_type: "Non-device software with AI features (not a medical device)"
+  products_in_scope:
+    - product_id: "IMPD-AUTOMATION"
+      name: "IMPD automation"
+      repository: "Zeuthens/impd-automation"
+      description: "AI solution that drafts Investigational Medicinal Product Dossier (IMPD) content for pharmaceutical regulatory submissions."
+      licensees_customers:
+        - "Egebro Consult (pharmaceutical regulatory consultancy; first licensee)"  # TODO: confirm description and licence status
+      medical_device: false
+      gxp_context: true
+  markets:
+    - "European Union (Denmark)"  # TODO: confirm market scope
+  adoption_profile: "app_with_ai (see matrices/adoption_profiles.yml), plus GxP context layer"
+  intended_use_policy: "Each product defines its intended use, users, claims, and non-device qualification before development and release under controlled procedures."
+  infrastructure_policy: "Each product defines and approves its infrastructure architecture and controls against applicable security, availability, data-integrity, and traceability requirements in its product repository."
+  qms_intent:
+    - "Apply ISO 9001:2015 (incl. Amd 1:2024) quality management expectations for organization context, interested-party needs, customer focus, process performance, organizational knowledge, and continual improvement."
+    - "Apply ISO/IEC 42001:2023 AI management controls for AI components inside Zeuthen software products (including IMPD automation) and AI-bearing supplier interfaces, including AI lifecycle, AI risk and impact assessment, and complete Annex A control consideration. Non-product AI tooling used to develop products or operate the QMS (for example Claude Code) remains controlled under supplier control, QMS tooling validation, document control, and change control."
+    - "Apply ISO/IEC 27001:2022 (incl. Amd 1:2024) information security governance for QMS, product, customer, supplier, and operational information assets."
+    - "Apply GDPR (Regulation (EU) 2016/679) data-protection controls where personal data is processed. Swiss nFADP is not applicable to the current scope."
+    - "GxP context: support pharmaceutical customers' computerized-system obligations by applying ISPE GAMP 5 and EU GMP Annex 11 expectations to the product lifecycle, as mapped in matrices/gamp5_gxp_gap_analysis.yml."
+    - "Apply risk-based software lifecycle, configuration, release, and risk management controls (SOP-018, SOP-020) to software products."
+    - "Retain objective evidence and traceability for quality, release, and customer-facing decisions."
+quality_policy_statement:
+  approved_by_role: "management_representative"
+  statement: "Zeuthen commits to delivering reliable, secure, and well-controlled AI-enabled software for pharmaceutical regulatory work through a risk-based, evidence-driven quality management system and continuous improvement."
+  approval_status: "TODO: approve the quality policy wording at QMS approval"
+signature_preferences:
+  preferred_display_roles:
+    zeuthens: "Management Representative"
+quality_objective_framework:
+  governance_cadence: "quarterly"
+  objectives:
+    - id: "QO-001"
+      objective: "Close CAPA actions on time"
+      metric: "percent_closed_on_or_before_due_date"
+      target: ">=95%"
+    - id: "QO-002"
+      objective: "Complete required controlled-document training on time"
+      metric: "percent_training_requests_closed_by_due_date"
+      target: ">=98%"
+    - id: "QO-003"
+      objective: "Maintain management review cadence"
+      metric: "reviews_completed_per_plan"
+      target: "100%"
+    - id: "QO-004"
+      objective: "Monitor customer feedback, satisfaction signals, and process performance for improvement opportunities"
+      metric: "percent_required_customer_and_process_quality_reviews_completed_on_time"
+      target: ">=95%"
+    - id: "QO-005"
+      objective: "Maintain information security and AI management controls for QMS and product lifecycle scope"
+      metric: "percent_required_isms_and_aims_reviews_completed_on_time"
+      target: ">=95%"

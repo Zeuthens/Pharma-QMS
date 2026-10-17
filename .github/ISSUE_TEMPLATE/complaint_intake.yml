@@ -1,0 +1,77 @@
+# Modified by Zeuthen, 2026-10-17
+name: Feedback and Complaint Intake
+description: Intake a complaint or quality-relevant feedback signal for assessment.
+title: "FEEDBACK / COMPLAINT: "
+labels:
+  - complaint
+  - feedback
+body:
+  - type: input
+    id: product_id
+    attributes:
+      label: Product ID
+      description: Product or subsystem associated with the complaint.
+      placeholder: IMPD-AUTOMATION
+    validations:
+      required: true
+  - type: textarea
+    id: reporter_details
+    attributes:
+      label: Reporter Details
+      description: Reporter organization, role, and contact route if available.
+      placeholder: Customer, distributor, internal support, or anonymous reporter.
+    validations:
+      required: true
+  - type: textarea
+    id: event_description
+    attributes:
+      label: Event Description
+      description: What happened, where, and when.
+      placeholder: Include the observed behavior and any immediate impact.
+    validations:
+      required: true
+  - type: dropdown
+    id: initial_severity
+    attributes:
+      label: Initial Severity
+      options:
+        - Critical
+        - Major
+        - Minor
+        - Unknown
+    validations:
+      required: true
+  - type: dropdown
+    id: capa_status
+    attributes:
+      label: CAPA Status
+      description: Record whether this intake has already triggered a CAPA.
+      options:
+        - No CAPA opened
+        - CAPA opened
+        - Under assessment
+    validations:
+      required: true
+  - type: textarea
+    id: capa_reference_or_rationale
+    attributes:
+      label: CAPA Reference or Rationale
+      description: Enter the CAPA ID when status is "CAPA opened". Otherwise enter N/A or a short rationale or next step.
+      placeholder: |
+        CAPA-2026-001
+        or
+        N/A - triage pending
+    validations:
+      required: true
+  - type: textarea
+    id: linked_context
+    attributes:
+      label: Linked Context
+      description: Related releases, prior complaints, incidents, and risk items.
+      placeholder: |
+        - release:
+        - risk:
+        - incident:
+        - prior complaint:
+    validations:
+      required: false

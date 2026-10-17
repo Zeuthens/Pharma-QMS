@@ -1,0 +1,46 @@
+version: 1
+record_type: software_architecture_spec
+required_fields:
+  architecture_id: "SAS-<product>-<yyyy-mm-dd>"
+  product_id: ""
+  source_requirements_reference: "records/design/system_requirements_spec_template.yml"
+  maintained_by_role: "engineering_lead"
+  system_context_summary: ""
+  components:
+    - component_id: "CMP-001"
+      name: ""
+      responsibility: ""
+      interfaces: []
+      allocated_requirements: []
+      linked_risk_controls: []
+  external_dependencies:
+    - dependency_name: ""
+      version_or_service: ""
+      intended_use: ""
+      evaluation_reference: ""
+  architecture_decisions:
+    - decision_id: "AD-001"
+      summary: ""
+      rationale: ""
+      consequences: []
+  privacy_by_design:
+    applicable: "yes|no|not_assessed"
+    processing_activity_references: []
+    personal_data_flows:
+      - flow_id: "PDF-001"
+        source: ""
+        destination: ""
+        data_categories: []
+        purpose: ""
+        storage_location: ""
+        transfer_assessment_reference: ""
+    controls:
+      minimization: ""
+      purpose_limitation: ""
+      pseudonymization_or_anonymization: ""
+      encryption: ""
+      access_control: ""
+      audit_logging: ""
+      retention_and_deletion: ""
+      backup_restore_privacy_handling: ""
+      data_subject_rights_support: ""

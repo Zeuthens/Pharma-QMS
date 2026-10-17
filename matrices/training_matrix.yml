@@ -1,0 +1,179 @@
+---
+# Pharma-QMS training matrix (Zeuthen). Seeded at adoption from the source baseline
+# role model; SOP-007, SOP-013, and SOP-014 are not applicable for the App with AI profile.
+# TODO(Zeuthen): add further team members and split roles as the team grows.
+# TODO(Zeuthen): assign an independent internal auditor (internal or external) to the
+# auditor role; the QMS owner cannot audit his own work (SOP-003).
+version: 1
+users:
+  Zeuthens:
+    full_name: "TODO: confirm full legal name for electronic signatures (candidate: Ulrik Ledgaard Zeuthen)"
+    job_title: "TODO: confirm job title (candidate: QMS Owner)"
+
+roles:
+  qa_lead:
+    users:
+      - Zeuthens
+    required_documents:
+      - QM-001
+      - SOP-001
+      - SOP-002
+      - SOP-003
+      - SOP-005
+      - SOP-006
+      - SOP-008
+      - SOP-009
+      - SOP-010
+      - SOP-011
+      - SOP-012
+      - SOP-015
+      - SOP-016
+      - SOP-017
+      - SOP-018
+      - SOP-019
+      - SOP-020
+      - SOP-021
+      - SOP-022
+      - SOP-023
+    awareness_documents:
+      - SOP-004
+
+  engineer:
+    users:
+      - Zeuthens
+    required_documents:
+      - QM-001
+      - SOP-001
+      - SOP-008
+      - SOP-009
+      - SOP-011
+      - SOP-017
+      - SOP-018
+      - SOP-020
+    awareness_documents:
+      - SOP-002
+      - SOP-006
+      - SOP-015
+      - SOP-019
+      - SOP-021
+      - SOP-022
+
+  engineering_lead:
+    users:
+      - Zeuthens
+    required_documents:
+      - QM-001
+      - SOP-001
+      - SOP-002
+      - SOP-008
+      - SOP-009
+      - SOP-011
+      - SOP-015
+      - SOP-017
+      - SOP-018
+      - SOP-020
+      - SOP-021
+      - SOP-022
+      - SOP-023
+    awareness_documents:
+      - SOP-006
+      - SOP-019
+
+  technical_qms_maintainer:
+    users:
+      - Zeuthens
+    required_documents:
+      - QM-001
+      - SOP-001
+      - SOP-006
+      - SOP-009
+      - SOP-011
+      - SOP-017
+      - SOP-021
+      - SOP-023
+    awareness_documents:
+      - SOP-002
+      - SOP-018
+      - SOP-020
+
+  privacy_lead:
+    users:
+      - Zeuthens
+    required_documents:
+      - SOP-001
+      - SOP-010
+      - SOP-017
+      - SOP-021
+      - SOP-023
+    awareness_documents:
+      - SOP-008
+      - SOP-018
+      - SOP-022
+
+  usability_lead:
+    users:
+      - Zeuthens
+    required_documents:
+      - QM-001
+      - SOP-001
+      - SOP-008
+      - SOP-011
+      - SOP-012
+      - SOP-018
+      - SOP-019
+    awareness_documents:
+      - SOP-020
+      - SOP-021
+      - SOP-022
+      - SOP-023
+
+  auditor:
+    users: []
+    required_documents:
+      - QM-001
+      - SOP-001
+      - SOP-002
+      - SOP-003
+      - SOP-004
+      - SOP-005
+      - SOP-006
+      - SOP-008
+      - SOP-009
+      - SOP-010
+      - SOP-011
+      - SOP-012
+      - SOP-015
+      - SOP-016
+      - SOP-017
+      - SOP-018
+      - SOP-019
+      - SOP-020
+      - SOP-021
+      - SOP-022
+      - SOP-023
+
+  management_representative:
+    users:
+      - Zeuthens
+    required_documents:
+      - QM-001
+      - SOP-001
+      - SOP-002
+      - SOP-003
+      - SOP-004
+      - SOP-005
+      - SOP-006
+      - SOP-008
+      - SOP-009
+      - SOP-010
+      - SOP-011
+      - SOP-012
+      - SOP-015
+      - SOP-016
+      - SOP-017
+      - SOP-018
+      - SOP-019
+      - SOP-020
+      - SOP-021
+      - SOP-022
+      - SOP-023

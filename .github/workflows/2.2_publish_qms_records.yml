@@ -1,0 +1,937 @@
+# Modified by Zeuthen, 2026-10-17
+name: 2.2 Publish QMS Records
+
+on:
+  pull_request:
+    types: [closed]
+    paths:
+      - records/**/*.md
+      - records/**/*.yml
+      - records/**/*.yaml
+      - records/**/*.json
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Merged pull request number to publish records for"
+        required: true
+        type: number
+
+permissions:
+  contents: write
+  issues: read
+  pull-requests: read
+
+jobs:
+  publish_records:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    env:
+      TARGET_RECORD_REPO: ${{ vars.QMS_RECORD_RELEASE_REPO || github.repository }}
+      TARGET_RECORD_BRANCH: main
+      PART11_TIMEOUT_SECONDS: "5400"
+      PART11_POLL_SECONDS: "20"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Resolve source PR
+        id: pr
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const prNumber = context.eventName === 'workflow_dispatch'
+              ? Number(context.payload.inputs?.pr_number || context.payload?.inputs?.pr_number || 0)
+              : Number(context.payload.pull_request?.number || 0);
+            if (!Number.isInteger(prNumber) || prNumber < 1) {
+              core.setFailed('A valid merged pull request number is required.');
+              return;
+            }
+
+            const pr = (await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            })).data;
+
+            if (!pr.merged_at) {
+              core.setFailed(`PR #${prNumber} is not merged.`);
+              return;
+            }
+
+            core.setOutput('pr_number', String(prNumber));
+            core.setOutput('base_sha', String(pr.base?.sha || ''));
+            core.setOutput('merge_sha', String(pr.merge_commit_sha || ''));
+
+      - name: Detect modified records
+        id: records
+        shell: bash
+        run: |
+          BASE_SHA="${{ steps.pr.outputs.base_sha }}"
+          MERGE_SHA="${{ steps.pr.outputs.merge_sha }}"
+          if [ -z "$MERGE_SHA" ]; then
+            MERGE_SHA="${{ github.sha }}"
+          fi
+
+          export BASE_SHA MERGE_SHA
+          python3 <<'PY' > changed_records.txt
+          import os
+          import re
+          import subprocess
+
+          def is_execution_record(path: str) -> bool:
+            if not path.startswith("records/"):
+              return False
+            if path.startswith("records/releases/"):
+              return False
+            if not re.search(r"\.(md|ya?ml|json)$", path, flags=re.IGNORECASE):
+              return False
+            if re.search(r"(^|/)README\.md$", path, flags=re.IGNORECASE):
+              return False
+            name = path.rsplit("/", 1)[-1]
+            if re.search(r"(^|[_-])template\.(md|ya?ml|json)$", name, flags=re.IGNORECASE):
+              return False
+            return True
+
+          base_sha = os.environ["BASE_SHA"]
+          merge_sha = os.environ["MERGE_SHA"]
+          diff_paths = subprocess.check_output(
+            [
+              "git",
+              "diff",
+              "--name-only",
+              base_sha,
+              merge_sha,
+              "--",
+              "records/**/*.md",
+              "records/**/*.yml",
+              "records/**/*.yaml",
+              "records/**/*.json",
+              "records/*.md",
+              "records/*.yml",
+              "records/*.yaml",
+              "records/*.json",
+            ],
+            text=True,
+          ).splitlines()
+
+          seen = set()
+          for raw in diff_paths:
+            path = raw.strip()
+            if not path or path in seen:
+              continue
+            if is_execution_record(path):
+              seen.add(path)
+              print(path)
+          PY
+          if [ -s changed_records.txt ]; then
+            echo "has_records=true" >> "$GITHUB_OUTPUT"
+            echo "merge_sha=$MERGE_SHA" >> "$GITHUB_OUTPUT"
+            cat changed_records.txt
+          else
+            echo "has_records=false" >> "$GITHUB_OUTPUT"
+            echo "No execution records changed in this merged PR."
+          fi
+
+      - name: Wait for Git-native Part 11 attestations
+        id: part11
+        if: steps.records.outputs.has_records == 'true'
+        uses: actions/github-script@v8
+        env:
+          TIMEOUT_SECONDS: ${{ env.PART11_TIMEOUT_SECONDS }}
+          POLL_SECONDS: ${{ env.PART11_POLL_SECONDS }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+        with:
+          script: |
+            const crypto = require('crypto');
+            const fs = require('fs');
+            const timeoutSeconds = Number(process.env.TIMEOUT_SECONDS || "5400");
+            const pollSeconds = Number(process.env.POLL_SECONDS || "20");
+            const prNumber = Number(process.env.PR_NUMBER || "0");
+            if (!Number.isInteger(prNumber) || prNumber < 1) {
+              core.setFailed('PR number output was not resolved for Part 11 signer matching.');
+              return;
+            }
+            const pr = (await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            })).data;
+            const mergeSha = pr.merge_commit_sha || context.sha;
+            const expectedTargetHash = crypto
+              .createHash('sha256')
+              .update(`${context.repo.owner}/${context.repo.repo}:${mergeSha}`)
+              .digest('hex');
+            const deadline = Date.now() + timeoutSeconds * 1000;
+
+            const prBody = pr.body || '';
+            const checklistFiles = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              per_page: 100,
+            });
+            const checklistPaths = checklistFiles.map((f) => String(f.filename || ''));
+            const requiresEvidenceChecklist = checklistPaths.some((path) => path.startsWith('records/verification_validation/runs/')) ||
+              /^##\s+Evidence Review Package\b/mi.test(prBody);
+            const evidenceChecklistStatus = (body) => {
+              const lines = String(body || '').split(/\r?\n/);
+              const start = lines.findIndex((line) => /^##\s+Evidence Review Checklist\b/i.test(line));
+              if (start < 0) return { present: false, complete: true, total: 0, open: [] };
+              const next = lines.findIndex((line, index) => index > start && /^##\s+\S/.test(line));
+              const section = lines.slice(start + 1, next < 0 ? undefined : next).join('\n');
+              const items = Array.from(section.matchAll(/^\s*-\s*\[( |x|X)\]\s+(.+)$/gm));
+              const open = items
+                .filter((item) => item[1] === ' ')
+                .map((item) => String(item[2] || '').trim())
+                .filter(Boolean);
+              return {
+                present: true,
+                complete: items.length > 0 && open.length === 0,
+                total: items.length,
+                open,
+              };
+            };
+            const checklist = evidenceChecklistStatus(prBody);
+            if (requiresEvidenceChecklist && !checklist.present) {
+              core.setFailed(
+                `PR #${prNumber} is an evidence-package PR but has no "## Evidence Review Checklist" section. Record publishing is blocked.`
+              );
+              return;
+            }
+            if (checklist.present && !checklist.complete) {
+              core.setFailed(
+                checklist.total === 0
+                  ? `PR #${prNumber} has an Evidence Review Checklist section but no checkable items. Record publishing is blocked.`
+                  : `PR #${prNumber} Evidence Review Checklist is incomplete; ${checklist.open.length} unchecked item(s) remain. Record publishing is blocked.`
+              );
+              return;
+            }
+            const commentsBeforeWait = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100
+            });
+            function extractRequestContext(commentBody) {
+              const match = commentBody.match(/<!-- SIGNATURE_REQUEST_CONTEXT_V1\s*([\s\S]*?)-->/i);
+              if (!match || !match[1]) return null;
+              try {
+                return JSON.parse(match[1].trim());
+              } catch {
+                return null;
+              }
+            }
+            const requestCommentsBeforeWait = commentsBeforeWait
+              .filter((c) => {
+                const body = c.body || '';
+                return body.includes('<!-- signature-native-signature-request -->') || body.includes('<!-- part11-native-signature-request -->');
+              })
+              .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+            const latestRequestContext = requestCommentsBeforeWait.length > 0
+              ? extractRequestContext(requestCommentsBeforeWait[requestCommentsBeforeWait.length - 1].body || '')
+              : null;
+
+            const meaningMatch = prBody.match(/\*\*Meaning of Signature:\*\*\s*([^\n]+)/i);
+            let requiredMeaning = String(latestRequestContext?.meaning || '').trim() || (meaningMatch ? meaningMatch[1].trim() : '');
+            if (!requiredMeaning || requiredMeaning.startsWith('[')) {
+              requiredMeaning = 'Approved Quality Record';
+            }
+
+            const rolesMatch = prBody.match(/\*\*Signer Roles:\*\*\s*([^\n]+)/i);
+            let requiredRolesCsv = '';
+            if (Array.isArray(latestRequestContext?.signers) && latestRequestContext.signers.length > 0) {
+              requiredRolesCsv = latestRequestContext.signers
+                .map((slot) => String(slot.role || '').trim())
+                .filter(Boolean)
+                .join('; ');
+            }
+            if (!requiredRolesCsv) {
+              requiredRolesCsv = rolesMatch ? rolesMatch[1].trim() : '';
+            }
+            if (!requiredRolesCsv || requiredRolesCsv.startsWith('[')) {
+              requiredRolesCsv = 'Quality Assurance Lead';
+            }
+            const allowedRoles = requiredRolesCsv
+              .split(/[;,]/)
+              .map((x) => x.trim())
+              .filter(Boolean)
+              .map((x) => x.toLowerCase());
+            const signerRegistryPath = 'matrices/signer_registry.json';
+            let signerRegistry = {};
+            if (fs.existsSync(signerRegistryPath)) {
+              try {
+                signerRegistry = JSON.parse(fs.readFileSync(signerRegistryPath, 'utf8'));
+              } catch (error) {
+                core.warning(`Could not parse ${signerRegistryPath}: ${error.message}`);
+              }
+            }
+            function resolveSignerProfile(login, fallbackName = '', fallbackTitle = '') {
+              const key = String(login || '').toLowerCase();
+              const profile = Object.entries(signerRegistry).find(([user]) => user.toLowerCase() === key)?.[1] || {};
+              return {
+                fullName: String(profile.full_name || fallbackName || login || '').trim(),
+                jobTitle: String(profile.job_title || fallbackTitle || '').trim(),
+              };
+            }
+
+            const authorLogin = (pr.user?.login || '').toLowerCase();
+            if (!authorLogin) {
+              core.setFailed(`PR #${prNumber} author could not be resolved for Part 11 signer matching.`);
+              return;
+            }
+            const automationBotLogins = new Set(['zeuthen-pharma-qms-bot', 'zeuthen-pharma-qms-bot[bot]', 'github-actions[bot]']);
+            const isAutomationAuthor = automationBotLogins.has(authorLogin);
+            const sigMatch = prBody.match(/\*\*Required Signatures:\*\*\s*([^\n]+)/i);
+            let requiredSignatures = latestRequestContext?.required_signatures
+              ? Number.parseInt(String(latestRequestContext.required_signatures).trim(), 10)
+              : (sigMatch ? Number.parseInt(sigMatch[1].trim(), 10) : 1);
+            if (!Number.isInteger(requiredSignatures) || requiredSignatures < 1) {
+              requiredSignatures = 1;
+            }
+            const requiredReviewerSignatures = isAutomationAuthor ? requiredSignatures : Math.max(0, requiredSignatures - 1);
+
+            const fresh = (await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            })).data;
+            const requestedReviewers = (fresh.requested_reviewers || [])
+              .map((r) => (r.login || '').toLowerCase())
+              .filter(Boolean);
+
+            const reviews = await github.paginate(github.rest.pulls.listReviews, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              per_page: 100,
+            });
+            const latestReviewByUser = new Map();
+            for (const review of reviews) {
+              const login = (review.user?.login || '').trim();
+              if (!login) continue;
+              latestReviewByUser.set(login.toLowerCase(), {
+                state: String(review.state || '').toUpperCase(),
+                commitId: String(review.commit_id || '').toLowerCase(),
+              });
+            }
+            const currentHeadSha = String(fresh.head?.sha || pr.head?.sha || '').toLowerCase();
+            const approvedOnHead = Array.from(latestReviewByUser.entries())
+              .filter(([, review]) => review.state === 'APPROVED' && review.commitId === currentHeadSha)
+              .map(([login]) => login);
+            const approvedOnHeadSet = new Set(approvedOnHead);
+            if (requiredReviewerSignatures > 0 && approvedOnHead.length === 0) {
+              core.setFailed(
+                `PR #${prNumber} requires reviewer signatures, but has no valid approval on current head commit ${currentHeadSha || '(unknown)'}. Record publishing is blocked.`
+              );
+              return;
+            }
+
+            const marker = '<!-- signature-auto-reviewers -->';
+            const legacyMarker = '<!-- part11-auto-reviewers -->';
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+            const markerComments = comments
+              .filter((c) => ((c.body || '').includes(marker) || (c.body || '').includes(legacyMarker)) && automationBotLogins.has(String(c.user?.login || '').toLowerCase()))
+              .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+            const assignedReviewers = markerComments.length > 0
+              ? (() => {
+                  const latestBody = markerComments[markerComments.length - 1].body || '';
+                  const lineMatch = latestBody.match(/Assigned reviewers:\s*([^\n]+)/i);
+                  return lineMatch
+                    ? Array.from((lineMatch[1] || '').matchAll(/@([A-Za-z0-9-]+)/g)).map((m) => m[1].toLowerCase())
+                    : [];
+                })()
+              : [];
+
+            let reviewerPool = Array.from(
+              new Set([
+                ...assignedReviewers,
+                ...requestedReviewers,
+              ])
+            );
+            if (reviewerPool.length === 0) {
+              reviewerPool = approvedOnHead;
+            }
+            if (reviewerPool.length < requiredReviewerSignatures) {
+              core.setFailed(
+                `PR #${prNumber} requires ${requiredReviewerSignatures} reviewer signature(s)${isAutomationAuthor ? '' : ' (author auto-signs 1)'}, but only ${reviewerPool.length} reviewer candidate(s) were resolved.`
+              );
+              return;
+            }
+
+            const approvedFromPool = reviewerPool.filter((login) => approvedOnHeadSet.has(login.toLowerCase()));
+            if (approvedFromPool.length < requiredReviewerSignatures) {
+              core.setFailed(
+                `PR #${prNumber} requires ${requiredReviewerSignatures} reviewer signature(s)${isAutomationAuthor ? '' : ' (author auto-signs 1)'}, but only ${approvedFromPool.length} reviewer candidate(s) approved.`
+              );
+              return;
+            }
+            const allowedSignerSet = new Set(
+              isAutomationAuthor
+                ? approvedFromPool.slice(0, requiredReviewerSignatures)
+                : [authorLogin, ...approvedFromPool.slice(0, requiredReviewerSignatures)]
+            );
+
+            function extractAttestationPayload(commentBody) {
+              const codeMatch = commentBody.match(/```json\s*([\s\S]*?)```/i);
+              if (!codeMatch || !codeMatch[1]) return null;
+              try {
+                return JSON.parse(codeMatch[1].trim());
+              } catch {
+                return null;
+              }
+            }
+
+            while (Date.now() < deadline) {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                per_page: 100
+              });
+
+              const candidateComments = comments
+                .filter((c) =>
+                  (c.body || '').includes('<!-- signature-native-attestation -->') ||
+                  (c.body || '').includes('<!-- part11-native-attestation -->') ||
+                  (c.body || '').includes('<!-- SIGNATURE_ATTESTATION_V1 -->') ||
+                  (c.body || '').includes('<!-- PART11_ATTESTATION_V1 -->')
+                )
+                .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+              const bySigner = new Map();
+              for (const c of candidateComments) {
+                const body = c.body || '';
+                const a = extractAttestationPayload(body);
+                if (!a) continue;
+                const isNative = body.includes('<!-- signature-native-attestation -->') || body.includes('<!-- part11-native-attestation -->');
+                const normalized = isNative
+                  ? {
+                      prNumber: String(a.record_number || a.pr_number || ''),
+                      targetHash: String(a.target_hash || a.commit_hash || ''),
+                      meaning: String(a.meaning_of_signature || ''),
+                      signerRole: String(a.signer_role || ''),
+                      signerLogin: String(a.actor_login || ''),
+                      actorId: Number(a.actor_id || 0),
+                      signerFullName: String(a.signer_full_name || '').trim(),
+                      signerJobTitle: String(a.signer_job_title || '').trim(),
+                      timestamp: String(a.timestamp_utc || c.created_at || ''),
+                      attestationSha256: String(a.attestation_sha256 || ''),
+                    }
+                  : {
+                      prNumber: String(a.record_number || a.pr_number || ''),
+                      targetHash: String(a.target_hash || a.commit_hash || ''),
+                      meaning: String(a.meaning_of_signature || ''),
+                      signerRole: String(a.signer_role || ''),
+                      signerLogin: String(a.user_id || ''),
+                      actorId: 0,
+                      signerFullName: '',
+                      signerJobTitle: '',
+                      timestamp: String(a.timestamp || c.created_at || ''),
+                      attestationSha256: String(a.attestation_id || ''),
+                    };
+
+                if (normalized.prNumber !== String(prNumber)) continue;
+                if (normalized.targetHash !== expectedTargetHash) continue;
+                if (normalized.meaning !== requiredMeaning) continue;
+
+                const roleLower = normalized.signerRole.toLowerCase();
+                if (allowedRoles.length > 0 && !allowedRoles.includes(roleLower)) continue;
+
+                const signerKey = normalized.signerLogin.toLowerCase();
+                if (!signerKey) continue;
+                if (!allowedSignerSet.has(signerKey)) continue;
+                const profile = resolveSignerProfile(signerKey, normalized.signerFullName, normalized.signerJobTitle);
+                bySigner.set(signerKey, {
+                  user_id: normalized.signerLogin,
+                  actor_id: normalized.actorId,
+                  signer_full_name: profile.fullName || normalized.signerLogin,
+                  signer_job_title: profile.jobTitle || '',
+                  signer_role: normalized.signerRole,
+                  meaning_of_signature: normalized.meaning,
+                  timestamp: normalized.timestamp,
+                  attestation_sha256: normalized.attestationSha256,
+                });
+              }
+
+              const attestations = Array.from(bySigner.values());
+              const hasAuthorSignature = bySigner.has(authorLogin);
+              const hasRequiredSignerSet = isAutomationAuthor ? true : hasAuthorSignature;
+              if (attestations.length >= requiredSignatures && hasRequiredSignerSet) {
+                core.info(`Captured ${attestations.length} Git-native signature(s) for hash ${expectedTargetHash}.`);
+                core.setOutput('target_hash', expectedTargetHash);
+                core.setOutput('attestations_json', JSON.stringify(attestations));
+                return;
+              }
+
+              await new Promise((resolve) => setTimeout(resolve, pollSeconds * 1000));
+            }
+
+            core.setFailed(
+              `Timed out after ${timeoutSeconds}s waiting for ${requiredSignatures} Git-native Part 11 signature(s)${isAutomationAuthor ? '' : ` including author @${authorLogin}`} on PR #${prNumber}.`
+            );
+
+      - name: Setup Python
+        if: steps.records.outputs.has_records == 'true'
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Build release bundles
+        if: steps.records.outputs.has_records == 'true'
+        env:
+          SOURCE_REPO: ${{ github.repository }}
+          SOURCE_PR: ${{ steps.pr.outputs.pr_number }}
+          SOURCE_MERGE_SHA: ${{ steps.records.outputs.merge_sha }}
+          PART11_TARGET_HASH: ${{ steps.part11.outputs.target_hash }}
+          PART11_ATTESTATIONS_JSON: ${{ steps.part11.outputs.attestations_json }}
+        shell: bash
+        run: |
+          python -m pip install --quiet markdown fpdf2 pyyaml
+          python <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          import markdown as md
+          import yaml
+          from fpdf import FPDF
+
+          changed = [line.strip() for line in Path("changed_records.txt").read_text(encoding="utf-8").splitlines() if line.strip()]
+          attestations = json.loads(os.environ["PART11_ATTESTATIONS_JSON"])
+          target_hash = os.environ["PART11_TARGET_HASH"].strip()
+
+          source_repo = os.environ["SOURCE_REPO"].strip()
+          source_pr = os.environ["SOURCE_PR"].strip()
+          source_merge_sha = os.environ["SOURCE_MERGE_SHA"].strip()
+          repo_root = Path.cwd().resolve()
+
+          out_root = Path("record_bundles")
+          out_root.mkdir(parents=True, exist_ok=True)
+
+          type_prefix = {
+            "management-reviews": "mr",
+            "capas": "capa",
+            "audits": "audit",
+            "training": "trn",
+            "suppliers": "sup",
+            "verification_validation": "vv",
+            "configuration": "cfg",
+            "risk": "risk",
+            "usability": "ue",
+            "design": "dd",
+          }
+
+          def slugify(text: str) -> str:
+            slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+            return slug or "record"
+
+          def is_execution_record(path: str) -> bool:
+            path_obj = Path(path)
+            if not path.startswith("records/"):
+              return False
+            if path.startswith("records/releases/"):
+              return False
+            if path_obj.suffix.lower() not in {".md", ".yml", ".yaml", ".json"}:
+              return False
+            if path_obj.name.lower() == "readme.md":
+              return False
+            return not re.search(r"(^|[_-])template\.(md|ya?ml|json)$", path_obj.name, flags=re.IGNORECASE)
+
+          def family_name(path: Path) -> str:
+            return path.parts[1] if len(path.parts) > 1 else "general"
+
+          def scope_root_for_family(path: Path) -> Path:
+            if len(path.parts) >= 4:
+              return Path(*path.parts[:3])
+            return Path(path.parts[0], path.parts[1])
+
+          def execution_records_under(root: Path):
+            if not root.exists():
+              return []
+            seen = set()
+            records = []
+            for candidate in root.rglob("*"):
+              if not candidate.is_file():
+                continue
+              rel = candidate.resolve().relative_to(repo_root).as_posix()
+              if rel in seen or not is_execution_record(rel):
+                continue
+              seen.add(rel)
+              records.append(Path(rel))
+            return sorted(records, key=lambda item: item.as_posix())
+
+          def load_structured_document(path: Path):
+            text = path.read_text(encoding="utf-8")
+            if path.suffix.lower() == ".json":
+              return json.loads(text)
+            return yaml.safe_load(text) or {}
+
+          def iter_reference_strings(node):
+            if isinstance(node, str):
+              yield node
+            elif isinstance(node, list):
+              for item in node:
+                yield from iter_reference_strings(item)
+            elif isinstance(node, dict):
+              for value in node.values():
+                yield from iter_reference_strings(value)
+
+          def normalize_repo_relative(candidate: Path):
+            try:
+              return candidate.resolve().relative_to(repo_root).as_posix()
+            except Exception:
+              return None
+
+          def resolve_usability_members(index_path: Path):
+            members = set()
+            try:
+              document = load_structured_document(index_path)
+            except Exception:
+              return members
+
+            reference_nodes = []
+            if isinstance(document, dict):
+              if isinstance(document.get("records"), dict):
+                reference_nodes.append(document["records"])
+              required_fields = document.get("required_fields", {})
+              if isinstance(required_fields, dict) and isinstance(required_fields.get("records"), dict):
+                reference_nodes.append(required_fields["records"])
+
+            for node in reference_nodes:
+              for ref in iter_reference_strings(node):
+                ref = str(ref or "").strip()
+                if not ref:
+                  continue
+                candidate = Path(ref) if ref.startswith("records/") else (index_path.parent / ref)
+                if not candidate.exists():
+                  continue
+                rel = normalize_repo_relative(candidate)
+                if rel and is_execution_record(rel):
+                  members.add(rel)
+            return members
+
+          def extract_plain_text(source_path: Path, source_text: str) -> str:
+            if source_path.suffix.lower() == ".md":
+              html = md.markdown(source_text)
+              return re.sub(r"<[^>]+>", "", html)
+            return source_text
+
+          bundle_specs = []
+          grouped = {}
+
+          for src in changed:
+            src_path = Path(src)
+            family = family_name(src_path)
+            if family in {"risk", "usability"}:
+              scope_root = scope_root_for_family(src_path)
+              grouped.setdefault((family, scope_root.as_posix()), set()).add(src)
+              continue
+
+            bundle_specs.append({
+              "bundle_kind": "single_record",
+              "family": family,
+              "bundle_id": slugify(src_path.stem),
+              "base_tag": f"{type_prefix.get(family, 'record')}-{slugify(src_path.stem)}",
+              "title": f"{type_prefix.get(family, 'record').upper()} Record: {src_path.stem}",
+              "scope_path": src,
+              "member_paths": [src],
+            })
+
+          risk_bundle_pattern = re.compile(r"(risk[_-]?register|risk[_-]?management[_-]plan|risk[_-]?management[_-]?review)", re.IGNORECASE)
+          usability_index_pattern = re.compile(r"usability[_-]?file[_-]?index", re.IGNORECASE)
+
+          for (family, scope_root), changed_members in sorted(grouped.items()):
+            scope_path = Path(scope_root)
+            member_paths = set(changed_members)
+            scoped_records = execution_records_under(scope_path)
+
+            if family == "risk":
+              for candidate in scoped_records:
+                if risk_bundle_pattern.search(candidate.name):
+                  member_paths.add(candidate.as_posix())
+            elif family == "usability":
+              index_records = [candidate for candidate in scoped_records if usability_index_pattern.search(candidate.name)]
+              for index_record in index_records:
+                member_paths.add(index_record.as_posix())
+                member_paths.update(resolve_usability_members(index_record))
+
+            scope_slug = slugify("/".join(scope_path.parts[2:]) or f"{family}-root")
+            prefix = type_prefix.get(family, "record")
+            bundle_specs.append({
+              "bundle_kind": "risk_record_bundle" if family == "risk" else "usability_file_bundle",
+              "family": family,
+              "bundle_id": scope_slug,
+              "base_tag": f"{prefix}-{scope_slug}",
+              "title": f"{family.replace('_', ' ').title()} Bundle: {scope_path.as_posix()}",
+              "scope_path": scope_path.as_posix(),
+              "member_paths": sorted(member_paths),
+            })
+
+          release_plan = []
+
+          for spec in bundle_specs:
+            member_descriptors = []
+            bundle_dir = out_root / spec["base_tag"]
+            bundle_dir.mkdir(parents=True, exist_ok=True)
+
+            for member_path in spec["member_paths"]:
+              src_path = Path(member_path)
+              if not src_path.exists():
+                raise RuntimeError(f"Changed record file no longer exists in merge commit: {member_path}")
+
+              source_text = src_path.read_text(encoding="utf-8")
+              source_sha = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+              plain_text = extract_plain_text(src_path, source_text)
+              flattened_name = src_path.name if len(spec["member_paths"]) == 1 else src_path.as_posix().replace("/", "__")
+              published_source_asset = flattened_name
+              (bundle_dir / published_source_asset).write_text(source_text, encoding="utf-8")
+              member_descriptors.append({
+                "source_record_path": member_path,
+                "source_record_sha256": source_sha,
+                "published_source_asset": published_source_asset,
+                "plain_text": plain_text,
+              })
+
+            pdf = FPDF()
+            pdf.set_auto_page_break(auto=True, margin=15)
+            pdf.add_page()
+            pdf.set_font("Helvetica", size=11)
+            for member in member_descriptors:
+              header = f"Source: {member['source_record_path']}"
+              pdf.multi_cell(0, 6, header, new_x="LMARGIN", new_y="NEXT")
+              pdf.multi_cell(0, 6, "-" * min(len(header), 72), new_x="LMARGIN", new_y="NEXT")
+              for raw_line in member["plain_text"].splitlines() or [""]:
+                line = raw_line.replace("\t", "    ")
+                pdf.multi_cell(0, 6, line if line else " ", new_x="LMARGIN", new_y="NEXT")
+              pdf.ln(3)
+
+            pdf_name = "record.pdf" if len(member_descriptors) == 1 else "bundle_index.pdf"
+            pdf_path = bundle_dir / pdf_name
+            pdf.output(str(pdf_path))
+            pdf_sha = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+
+            signed_attestation = {
+              "schema_version": 1,
+              "attestation_scope": "qms_record_release",
+              "source_repository": source_repo,
+              "source_pull_request": int(source_pr),
+              "source_merge_commit": source_merge_sha,
+              "part11_target_hash": target_hash,
+              "signed_attestations": attestations,
+              "captured_at_utc": datetime.now(timezone.utc).isoformat(),
+            }
+            (bundle_dir / "signed_attestation.json").write_text(
+              json.dumps(signed_attestation, indent=2) + "\n",
+              encoding="utf-8",
+            )
+            certificate_name = f"Electronic_Signature_Certificate_PR{source_pr}.pdf"
+            title_page_path = bundle_dir / certificate_name
+            subprocess.run(
+              [
+                "python",
+                "scripts/generate_part11_title_page.py",
+                "--attestation",
+                str(bundle_dir / "signed_attestation.json"),
+                "--output",
+                str(title_page_path),
+                "--record-id",
+                spec["bundle_id"],
+              ],
+              check=True,
+            )
+            title_page_sha = hashlib.sha256(title_page_path.read_bytes()).hexdigest()
+
+            manifest_members = [
+              {
+                "source_record_path": member["source_record_path"],
+                "source_record_sha256": member["source_record_sha256"],
+                "published_source_asset": member["published_source_asset"],
+              }
+              for member in member_descriptors
+            ]
+            manifest = {
+              "schema_version": 1,
+              "bundle_kind": spec["bundle_kind"],
+              "record_family": spec["family"],
+              "bundle_id": spec["bundle_id"],
+              "source_repository": source_repo,
+              "source_pull_request": int(source_pr),
+              "source_merge_commit": source_merge_sha,
+              "bundle_scope_path": spec["scope_path"],
+              "bundle_member_count": len(manifest_members),
+              "bundle_members": manifest_members,
+              "rendered_pdf_asset": pdf_name,
+              "rendered_pdf_sha256": pdf_sha,
+              "electronic_signature_certificate_pdf_sha256": title_page_sha,
+              "part11_title_page_pdf_sha256": title_page_sha,
+              "part11_target_hash": target_hash,
+              "part11_signer_count": len(attestations),
+              "part11_signers": [
+                {
+                  "user_id": att.get("user_id", ""),
+                  "signer_full_name": att.get("signer_full_name", ""),
+                  "signer_job_title": att.get("signer_job_title", ""),
+                  "signer_role": att.get("signer_role", ""),
+                  "timestamp": att.get("timestamp", ""),
+                }
+                for att in attestations
+              ],
+              "published_at_utc": datetime.now(timezone.utc).isoformat(),
+            }
+            if len(manifest_members) == 1:
+              manifest["source_record_path"] = manifest_members[0]["source_record_path"]
+              manifest["source_record_sha256"] = manifest_members[0]["source_record_sha256"]
+              manifest["published_source_asset"] = manifest_members[0]["published_source_asset"]
+
+            (bundle_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+            asset_names = [member["published_source_asset"] for member in member_descriptors]
+            notes = "\n".join([
+              f"# Immutable QMS Record Package",
+              "",
+              f"- Source repo: `{source_repo}`",
+              f"- Source PR: `#{source_pr}`",
+              f"- Bundle kind: `{spec['bundle_kind']}`",
+              f"- Bundle scope: `{spec['scope_path']}`",
+              f"- Source merge commit: `{source_merge_sha}`",
+              f"- Part 11 target hash: `{target_hash}`",
+              f"- Signatures captured: `{len(attestations)}`",
+              "",
+              "Assets:",
+              *[f"- `{asset_name}`" for asset_name in asset_names],
+              f"- `{pdf_name}`",
+              "- `manifest.json`",
+              "- `signed_attestation.json`",
+              f"- `{certificate_name}`",
+            ])
+            notes_path = bundle_dir / "release_notes.md"
+            notes_path.write_text(notes + "\n", encoding="utf-8")
+
+            assets = [str(bundle_dir / asset_name) for asset_name in asset_names]
+            assets.extend([
+              str(bundle_dir / pdf_name),
+              str(bundle_dir / "manifest.json"),
+              str(bundle_dir / "signed_attestation.json"),
+              str(title_page_path),
+            ])
+            release_plan.append({
+              "base_tag": spec["base_tag"],
+              "title": spec["title"],
+              "bundle_dir": str(bundle_dir),
+              "notes_file": str(notes_path),
+              "assets": assets,
+            })
+
+          Path("release_plan.json").write_text(json.dumps(release_plan, indent=2) + "\n", encoding="utf-8")
+          if not release_plan:
+            raise RuntimeError("No releasable record bundles were prepared from changed records.")
+          print(f"Prepared {len(release_plan)} record release bundle(s).")
+          PY
+
+      - name: Upload release bundle evidence
+        if: steps.records.outputs.has_records == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@v6
+        with:
+          name: qms-record-bundles-${{ github.run_id }}
+          path: |
+            record_bundles/
+            release_plan.json
+          if-no-files-found: error
+          retention-days: 5
+
+      - name: Create GitHub App token for record release publication
+        if: steps.records.outputs.has_records == 'true'
+        id: app_token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.QMS_BOT_APP_ID }}
+          private-key: ${{ secrets.QMS_BOT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+
+      - name: Publish immutable record releases
+        if: steps.records.outputs.has_records == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          TARGET_REPO: ${{ env.TARGET_RECORD_REPO }}
+          TARGET_BRANCH: ${{ env.TARGET_RECORD_BRANCH }}
+          TARGET_REF: ${{ steps.records.outputs.merge_sha }}
+        shell: bash
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "GitHub token is required to publish immutable releases in ${TARGET_REPO}."
+            exit 1
+          fi
+
+          python <<'PY'
+          import json
+          import re
+          import subprocess
+          import time
+          from pathlib import Path
+
+          plan = json.loads(Path("release_plan.json").read_text(encoding="utf-8"))
+          import os
+          target_repo = os.environ["TARGET_REPO"].strip()
+          target_branch = os.environ["TARGET_BRANCH"].strip()
+          target_ref = os.environ.get("TARGET_REF", "").strip() or target_branch
+
+          def run_with_retry(cmd, attempts=5, sleep_seconds=3, allow_404=False):
+            last = None
+            for _ in range(attempts):
+              proc = subprocess.run(cmd, text=True, capture_output=True)
+              if proc.returncode == 0:
+                return proc.stdout
+              stderr = (proc.stderr or "") + (proc.stdout or "")
+              if allow_404 and ("HTTP 404" in stderr or "Not Found" in stderr):
+                return None
+              last = stderr.strip()
+              time.sleep(sleep_seconds)
+            raise RuntimeError(f"Command failed: {' '.join(cmd)}\n{last}")
+
+          for entry in plan:
+            base_tag = entry["base_tag"]
+            prefix = f"{base_tag}-r"
+            refs_raw = run_with_retry(
+              ["gh", "api", f"repos/{target_repo}/git/matching-refs/tags/{prefix}"],
+              allow_404=True,
+            )
+            refs = json.loads(refs_raw) if refs_raw else []
+
+            max_rev = 0
+            for ref in refs:
+              ref_name = ref.get("ref", "")
+              m = re.search(r"-r(\d+)$", ref_name)
+              if m:
+                max_rev = max(max_rev, int(m.group(1)))
+
+            tag = f"{base_tag}-r{max_rev + 1:02d}"
+            notes_file = entry["notes_file"]
+            assets = entry["assets"]
+
+            create_cmd = [
+              "gh", "release", "create", tag,
+              "--repo", target_repo,
+              "--target", target_ref,
+              "--title", entry["title"],
+              "--notes-file", notes_file,
+              "--draft",
+              *assets,
+            ]
+            run_with_retry(create_cmd)
+            run_with_retry(["gh", "release", "edit", tag, "--repo", target_repo, "--draft=false"])
+            print(f"Published immutable release: {target_repo}@{tag}")
+          PY

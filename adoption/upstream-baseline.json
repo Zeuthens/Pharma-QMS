@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "model": "private-adopter-repo",
+  "upstream_repository": "open QMS baseline named in NOTICE (source repository URL and attribution are recorded there)",
+  "upstream_ref": "QMS-2026-07-09-R005",
+  "upstream_commit": "bb0919349a2d5400352728c400d93141ccd61065",
+  "adoption_profile": "app_with_ai",
+  "adoption_method": "manual replication of the upstream bootstrap (no upstream tooling run); attribution in NOTICE",
+  "recorded_at_utc": "2026-10-17T20:16:43+00:00",
+  "managed_by": [
+    "tools/qms_distribution.py"
+  ],
+  "note": "The upstream source repository URL and the attribution are recorded in NOTICE."
+}

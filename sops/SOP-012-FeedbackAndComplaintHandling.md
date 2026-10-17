@@ -1,0 +1,96 @@
+---
+sop_id: SOP-012
+title: Feedback and Complaint Handling
+revision: R09
+revision_date: 2026-10-17
+status: Published
+owner_role: qa_lead
+approver_role: qa_lead
+related_issue: "TODO: link the Pharma-QMS adoption issue"
+---
+## 1. Purpose
+Define a consistent process to collect, assess, investigate, trend, and respond to user/customer feedback, satisfaction signals, and complaints for Zeuthen software products.
+
+## 2. Scope
+Applies to all product feedback, customer satisfaction, and complaint signals from users, customers, partners, and internal channels across supported markets. A complaint is any written, electronic, or oral communication alleging deficiencies related to the identity, quality, durability, reliability, safety, or performance of a product.
+
+## 3. Inputs
+- Incoming feedback/complaint reports
+- Customer satisfaction signals, support trends, adoption friction, and customer requirement changes
+- Product release history and known issue context
+- Risk evaluation criteria; regulatory incident reporting criteria (SOP-013) are not applicable for the App with AI profile because products in scope are not medical devices
+
+## 4. Outputs
+- Classified case record
+- Investigation outcome and response
+- Customer satisfaction trend summary and improvement recommendations where applicable
+- Escalations to CAPA, incident reporting, or PMS trend actions
+
+## 5. Roles and Responsibilities
+| Role | Responsibilities |
+|---|---|
+| QA Lead | Owns intake, triage, case communication, complaint quality/risk classification, and trend-signal review. |
+| Engineering Lead | Investigates technical causes and corrective actions. |
+
+## 6. Procedure
+
+### 6.1 Intake and Logging
+1. Log each report with source, timestamp, product/version, and reporter details.
+2. Assign unique case identifier and initial severity class.
+3. Acknowledge receipt within 2 business days.
+
+### 6.2 Triage
+1. Determine whether report is general feedback, complaint, or potential reportable incident.
+2. Prioritize by potential patient/user impact, recurrence, and regulatory significance.
+3. All complaints shall be reviewed and evaluated to determine the need for investigation. Where no investigation is conducted, justification shall be documented.
+4. Escalate possible security or data-protection incidents immediately under SOP-021 or SOP-023, and escalate any indication that a product is used for a medical purpose to the Management Representative for re-evaluation of the adoption profile under SOP-009.
+
+### 6.3 Investigation
+1. Collect evidence: logs, reproduction steps, affected population, and controls.
+2. Determine root cause status (`confirmed`, `probable`, `not confirmed`).
+3. Where applicable, complaint findings shall be evaluated for impact on the risk management file.
+4. Define corrective actions and target timelines.
+
+### 6.4 Response and Closure
+1. Provide documented response or status update to reporter when applicable.
+2. Close case only when investigation and actions are complete or justified.
+3. Link case to CAPA/change record when systemic action is required.
+
+### 6.5 Trending and Escalation
+1. Review feedback, complaint, customer satisfaction, and support trends monthly.
+2. Escalate adverse trends to PMS analysis, CAPA, change control, or management review as applicable.
+3. Identify improvement opportunities when satisfaction signals, repeated questions, support friction, or customer requirement changes indicate that QMS or product/service controls should be updated.
+
+## 7. Required Records
+- Complaint/feedback case log
+- Customer satisfaction trend summary when satisfaction signals are reviewed
+- Investigation evidence and conclusion
+- Linked CAPA/incident/PMS references
+
+## 8. Traceability
+| Standard Clause | Control in this SOP |
+|---|---|
+| ISO 13485:2016 8.2.1 | Defines feedback collection and monitoring controls. |
+| ISO 13485:2016 8.2.2 | Defines complaint handling workflow and records. |
+| ISO 9001:2015 5.1.2, 8.2, 9.1.2 | Defines customer focus, customer requirement review interfaces, and customer satisfaction monitoring. |
+
+## 9. Related Controlled Documents
+- SOP-013 Regulatory Incident Reporting (not applicable for the App with AI profile; not part of Pharma-QMS)
+- SOP-014 Post-Market Surveillance (not applicable for the App with AI profile; not part of Pharma-QMS)
+- SOP-021 Information Security Management
+- SOP-023 Data Protection and Privacy Management
+- SOP-002 CAPA
+
+## 10. Revision History
+| Revision | Revision Date | Change Summary |
+|---|---|---|
+| R00 | 2026-03-02 | Initial full release. |
+| R01 | 2026-03-07 | Renamed the complaint-process business owner role to the controlled product/regulatory owner role used in small-team deployments. |
+| R02 | 2026-03-07 | Simplified the complaint-process role names to `regulatory_lead` and `engineering_lead`. |
+| R03 | 2026-03-18 | Removed top-table standards clause metadata; normative references remain in the Traceability section. |
+| R04 | 2026-03-25 | Added complaint definition, clarified incident-criteria input, required complaint investigation decisions, and linked complaint findings back to risk management. |
+| R05 | 2026-03-27 | Consolidated the standalone regulatory-lead complaint-owner role into the QA-lead baseline and aligned the role table plus ownership metadata. |
+| R06 | 2026-04-27 | Renamed YAML metadata field `effective_date` to `revision_date` to align controlled-document metadata with the tag-based publication model. The effective date is derived from the published QMS release tag rather than from the document front matter. |
+| R07 | 2026-05-04 | Standardize standards citations to specific versions. |
+| R08 | 2026-05-26 | Added ISO 9001 customer satisfaction and customer-requirement trend monitoring to the feedback process. |
+| R09 | 2026-10-17 | Adopted into Pharma-QMS for Zeuthen from the upstream baseline release QMS-2026-07-09-R005; tailored for the App with AI profile; pending approval. |

@@ -1,0 +1,101 @@
+---
+sop_id: SOP-004
+title: Management Review
+revision: R10
+revision_date: 2026-10-17
+status: Published
+owner_role: management_representative
+approver_role: management_representative
+related_issue: "TODO: link the Pharma-QMS adoption issue"
+---
+## 1. Purpose
+Define how top management reviews the QMS to ensure continuing suitability, adequacy, effectiveness, and alignment to quality policy/objectives.
+
+## 2. Scope
+Applies to formal management review meetings and resulting decisions/actions for the entire QMS and product lifecycle oversight.
+
+## 3. Inputs
+- Audit results and CAPA status
+- Complaint/feedback/PMS/incident trends
+- Process performance and quality objectives
+- Organization context, interested-party needs, customer satisfaction signals, and risks/opportunities
+- Supplier performance and regulatory changes
+- Resource and competence adequacy
+
+## 4. Outputs
+- Management review minutes
+- Decisions/actions with owners and due dates
+- Resource and quality objective updates
+
+## 5. Roles and Responsibilities
+| Role | Responsibilities |
+|---|---|
+| Management Representative | Plans agenda, consolidates inputs, records outputs/actions. |
+| Management Representative and delegated management attendees | Evaluate QMS performance and approve decisions/resources. |
+| QA Lead | Presents quality indicators and compliance status. |
+| Role Leads | Present process performance and improvement plans for assigned areas. |
+
+## 6. Procedure
+
+### 6.1 Frequency and Scheduling
+1. Hold formal management review at least quarterly.
+2. Additional ad-hoc review is required for critical compliance or safety events.
+
+### 6.2 Agenda and Input Package
+1. Prepare agenda and input package at least 5 business days before the meeting.
+2. Minimum input set:
+   - Previous action status
+   - Audit and CAPA trends
+   - Feedback/complaint/incident/PMS data
+   - Customer satisfaction and interested-party requirement trends
+   - Quality objective performance
+   - Organization context, process risks/opportunities, and climate-relevance changes where applicable
+   - Supplier and resource status
+
+### 6.3 Review Execution
+1. Confirm quorum: management representative + required top management delegates.
+2. Review each input topic for adequacy/effectiveness and risk.
+3. Record decisions, action owners, due dates, and rationale.
+
+### 6.4 Output Control and Follow-Up
+1. Publish approved minutes in the designated product/study record repository.
+2. Link each action to CAPA/change control where applicable.
+3. Track action completion monthly until closure.
+
+### 6.5 Escalation
+1. Escalate overdue high-risk actions to top management and QA lead.
+2. If QMS adequacy is compromised, initiate immediate containment and corrective planning.
+
+## 7. Required Records
+- Management review plan/agenda
+- Attendance and minutes
+- Action tracker with closure evidence
+
+## 8. Traceability
+| Standard Clause | Control in this SOP |
+|---|---|
+| ISO 13485:2016 5.6.1 | Defines management review frequency and governance ownership. |
+| ISO 13485:2016 5.6.2 | Defines required review inputs. |
+| ISO 13485:2016 5.6.3 | Defines required review outputs and action follow-up. |
+| ISO 9001:2015 9.3 | Defines management review inputs and outputs for context, customer satisfaction, process performance, resources, risks/opportunities, and improvement. |
+
+## 9. Related Controlled Documents
+- QM-001 Quality Manual
+- SOP-005 QMS Governance
+- SOP-002 CAPA
+- SOP-016 Quality Metrics and Data Analysis
+
+## 10. Revision History
+| Revision | Revision Date | Change Summary |
+|---|---|---|
+| R00 | 2026-03-01 | Initial placeholder release. |
+| R01 | 2026-03-02 | Full management review governance procedure implemented. |
+| R02 | 2026-03-05 | Updated management-review record-location control to designated product/study repositories instead of local QMS-repository record paths. |
+| R03 | 2026-03-07 | Normalized attendee and presenter role language to the controlled small-team role model. |
+| R04 | 2026-03-07 | Renamed generic presenter wording from role owners to role leads to match the simplified role taxonomy. |
+| R05 | 2026-03-08 | Split the Quality Manual out of SOP-005 and linked management review to both the top-level manual and the governance procedure. |
+| R06 | 2026-03-18 | Removed top-table standards clause metadata; normative references remain in the Traceability section. |
+| R07 | 2026-04-27 | Renamed YAML metadata field `effective_date` to `revision_date` to align controlled-document metadata with the tag-based publication model. The effective date is derived from the published QMS release tag rather than from the document front matter. |
+| R08 | 2026-05-04 | Standardize standards citations to specific versions. |
+| R09 | 2026-05-26 | Added ISO 9001 management review inputs for context, interested parties, customer satisfaction, risks/opportunities, and improvement. |
+| R10 | 2026-10-17 | Adopted into Pharma-QMS for Zeuthen from the upstream baseline release QMS-2026-07-09-R005; tailored for the App with AI profile; pending approval. |

@@ -1,0 +1,487 @@
+# Modified by Zeuthen, 2026-10-17
+name: 2.1 PR Signature Request Gate
+run-name: 2.1 Signature Request
+
+on:
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Merged pull request number to recover signature request comment for"
+        required: true
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: signature-post-merge-pr-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  request_native_signatures:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Parse merged PR signature requirements
+        id: parse
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const crypto = require('crypto');
+            const bodyBase64 = (text) => Buffer.from(String(text || ''), 'utf8').toString('base64');
+            const inputPrNumber = Number.parseInt((process.env.WORKFLOW_INPUT_PR_NUMBER || '').trim(), 10);
+            const eventPr = context.payload.pull_request;
+            const prNumber = Number.isInteger(inputPrNumber) && inputPrNumber > 0
+              ? inputPrNumber
+              : eventPr?.number;
+            if (!Number.isInteger(prNumber) || prNumber < 1) {
+              core.setFailed('A valid merged PR number is required.');
+              return;
+            }
+            const pr = (await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            })).data;
+            if (!pr.merged) {
+              core.setFailed(`PR #${prNumber} must be merged before a signature request can be posted.`);
+              return;
+            }
+            const body = pr.body || '';
+
+            // Last-match semantics mirror scripts/resolve_signature_policy.py
+            // (`_extract_signature_field`). The
+            // qm/sops exact-declaration block in .github/pull_request_template.md
+            // and any narrative prose in the Context section that references
+            // these field names would otherwise shadow the actual declaration.
+            const meaningMatch = [...body.matchAll(/\*\*Meaning of Signature:\*\*\s*([^\n]+)/gi)].pop() || null;
+            let meaning = meaningMatch ? meaningMatch[1].trim() : '';
+            if (!meaning || meaning.startsWith('[')) {
+              meaning = 'Approved Quality Record';
+            }
+
+            const targetCommit = pr.merge_commit_sha || pr.head?.sha;
+            const repoFull = `${context.repo.owner}/${context.repo.repo}`;
+            const targetHash = crypto.createHash('sha256').update(`${repoFull}:${targetCommit}`).digest('hex');
+            const authorLogin = (pr.user?.login || '').toLowerCase();
+            if (!authorLogin) {
+              core.setFailed(`PR #${prNumber} author could not be resolved for Part 11 signer list.`);
+              return;
+            }
+            const automationBotLogins = new Set(['zeuthen-pharma-qms-bot', 'zeuthen-pharma-qms-bot[bot]', 'github-actions[bot]']);
+            const isAutomationAuthor = automationBotLogins.has(authorLogin);
+            const sigMatch = [...body.matchAll(/\*\*Required Signatures:\*\*\s*([^\n]+)/gi)].pop() || null;
+            let required = sigMatch ? Number.parseInt(sigMatch[1].trim(), 10) : 1;
+            if (!Number.isInteger(required) || required < 1) {
+              required = 1;
+            }
+            const baseRequiredReviewerSignatures = isAutomationAuthor ? required : Math.max(0, required - 1);
+            const changedFiles = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              per_page: 100,
+            });
+            const paths = changedFiles.map((f) => String(f.filename || ''));
+            const requiresEvidenceChecklist = paths.some((path) => path.startsWith('records/verification_validation/runs/')) ||
+              /^##\s+Evidence Review Package\b/mi.test(body);
+            const evidenceChecklistStatus = (body) => {
+              const lines = String(body || '').split(/\r?\n/);
+              const start = lines.findIndex((line) => /^##\s+Evidence Review Checklist\b/i.test(line));
+              if (start < 0) return { present: false, complete: true, total: 0, open: [] };
+              const next = lines.findIndex((line, index) => index > start && /^##\s+\S/.test(line));
+              const section = lines.slice(start + 1, next < 0 ? undefined : next).join('\n');
+              const items = Array.from(section.matchAll(/^\s*-\s*\[( |x|X)\]\s+(.+)$/gm));
+              const open = items
+                .filter((item) => item[1] === ' ')
+                .map((item) => String(item[2] || '').trim())
+                .filter(Boolean);
+              return {
+                present: true,
+                complete: items.length > 0 && open.length === 0,
+                total: items.length,
+                open,
+              };
+            };
+            const checklist = evidenceChecklistStatus(body);
+            if (requiresEvidenceChecklist && !checklist.present) {
+              core.setFailed(
+                `PR #${prNumber} is an evidence-package PR but has no "## Evidence Review Checklist" section. Signature request was not posted.`
+              );
+              return;
+            }
+            if (checklist.present && !checklist.complete) {
+              core.setFailed(
+                checklist.total === 0
+                  ? `PR #${prNumber} has an Evidence Review Checklist section but no checkable items. Signature request was not posted.`
+                  : `PR #${prNumber} Evidence Review Checklist is incomplete; ${checklist.open.length} unchecked item(s) remain. Signature request was not posted.`
+              );
+              return;
+            }
+            const hasPath = (prefix) => paths.some((p) => p.startsWith(prefix));
+            const isRecordArtifactPath = (path) => path.startsWith('records/') && /\.(md|ya?ml|json)$/i.test(path);
+            const isTemplateRecordPath = (path) => /(^|[_-])template\.(md|ya?ml|json)$/i.test(path.split('/').pop() || '');
+            const isRecordIndexPath = (path) => path.startsWith('records/') && /(^|\/)README\.md$/i.test(path);
+            const isExecutionRecordPath = (path) =>
+              isRecordArtifactPath(path) &&
+              !isTemplateRecordPath(path) &&
+              !isRecordIndexPath(path);
+            const coapprovalReasons = [];
+            if (hasPath('qm/') || hasPath('sops/')) coapprovalReasons.push('controlled documents (/qm, /sops)');
+            if (paths.some((path) => isExecutionRecordPath(path))) coapprovalReasons.push('execution records (/records, excluding templates and index pages)');
+            if (paths.some((path) => isExecutionRecordPath(path) && path.startsWith('records/management-reviews/'))) coapprovalReasons.push('management review records (/records/management-reviews)');
+            if (hasPath('matrices/')) coapprovalReasons.push('matrix/role files (/matrices)');
+            const policyMinimumReviewerSignatures = coapprovalReasons.length > 0 ? 1 : 0;
+            const requiredReviewerSignatures = Math.max(baseRequiredReviewerSignatures, policyMinimumReviewerSignatures);
+            const requiredSignaturesForRequest = isAutomationAuthor
+              ? Math.max(required, requiredReviewerSignatures)
+              : Math.max(required, requiredReviewerSignatures + 1);
+            const requestedReviewers = (pr.requested_reviewers || [])
+              .map((r) => (r.login || '').toLowerCase())
+              .filter(Boolean);
+            const reviews = await github.paginate(github.rest.pulls.listReviews, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              per_page: 100,
+            });
+            const latestReviewByUser = new Map();
+            for (const review of reviews) {
+              const login = (review.user?.login || '').trim();
+              if (!login) continue;
+              latestReviewByUser.set(login.toLowerCase(), {
+                state: String(review.state || '').toUpperCase(),
+                commitId: String(review.commit_id || '').toLowerCase(),
+              });
+            }
+            const currentHeadSha = String(pr.head?.sha || '').toLowerCase();
+            const approvedOnHead = Array.from(latestReviewByUser.entries())
+              .filter(([, review]) => review.state === 'APPROVED' && review.commitId === currentHeadSha)
+              .map(([login]) => login);
+            const approvedOnHeadSet = new Set(approvedOnHead);
+            if (requiredReviewerSignatures > 0 && approvedOnHead.length === 0) {
+              core.setFailed(
+                `PR #${prNumber} requires reviewer signatures, but has no valid approval on current head commit ${currentHeadSha || '(unknown)'}. Signature request was not posted.`
+              );
+              return;
+            }
+
+            const marker = '<!-- signature-auto-reviewers -->';
+            const legacyMarker = '<!-- part11-auto-reviewers -->';
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+            const markerComments = comments
+              .filter((c) => ((c.body || '').includes(marker) || (c.body || '').includes(legacyMarker)) && automationBotLogins.has(String(c.user?.login || '').toLowerCase()))
+              .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+            const assignedReviewers = markerComments.length > 0
+              ? (() => {
+                  const latestBody = markerComments[markerComments.length - 1].body || '';
+                  const lineMatch = latestBody.match(/Assigned reviewers:\s*([^\n]+)/i);
+                  return lineMatch
+                    ? Array.from((lineMatch[1] || '').matchAll(/@([A-Za-z0-9-]+)/g)).map((m) => m[1].toLowerCase())
+                    : [];
+                })()
+              : [];
+
+            let reviewerPool = Array.from(
+              new Set([
+                ...assignedReviewers,
+                ...requestedReviewers,
+              ])
+            );
+            if (reviewerPool.length === 0) {
+              reviewerPool = approvedOnHead;
+            }
+            if (reviewerPool.length < requiredReviewerSignatures) {
+              core.setFailed(
+                `PR #${prNumber} requires ${requiredReviewerSignatures} reviewer signature(s)${isAutomationAuthor ? '' : ' (author auto-signs 1)'}, but only ${reviewerPool.length} reviewer candidate(s) were resolved.${coapprovalReasons.length > 0 ? ` Co-approval scope matched: ${coapprovalReasons.join('; ')}` : ''}`
+              );
+              return;
+            }
+
+            const approvedFromPool = reviewerPool.filter((login) => approvedOnHeadSet.has(login.toLowerCase()));
+            if (approvedFromPool.length < requiredReviewerSignatures) {
+              core.setFailed(
+                `PR #${prNumber} requires ${requiredReviewerSignatures} reviewer signature(s)${isAutomationAuthor ? '' : ' (author auto-signs 1)'}, but only ${approvedFromPool.length} reviewer candidate(s) approved.`
+              );
+              return;
+            }
+            const reviewerSigners = approvedFromPool.slice(0, requiredReviewerSignatures);
+            const finalSigners = isAutomationAuthor ? reviewerSigners : [authorLogin, ...reviewerSigners];
+
+            core.setOutput('pr_number', String(prNumber));
+            core.setOutput('meaning_of_signature', meaning);
+            core.setOutput('required_signatures', String(requiredSignaturesForRequest));
+            core.setOutput('required_reviewer_signatures', String(requiredReviewerSignatures));
+            core.setOutput('target_hash', targetHash);
+            core.setOutput('target_commit', targetCommit);
+            core.setOutput('author_login', authorLogin);
+            core.setOutput('author_is_automation_bot', String(isAutomationAuthor));
+            core.setOutput('approved_signers_csv', finalSigners.join(','));
+            core.setOutput('coapproval_reasons', coapprovalReasons.join('; '));
+            core.setOutput('pr_body_base64', bodyBase64(body));
+            core.setOutput('changed_paths_json', JSON.stringify(paths));
+        env:
+          WORKFLOW_INPUT_PR_NUMBER: ${{ github.event.inputs.pr_number || '' }}
+
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Resolve signer roles from PR content
+        id: roles
+        run: |
+          python3 scripts/resolve_signature_policy.py \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --author "${AUTHOR_LOGIN}" \
+            --body-base64 "${PR_BODY_BASE64}" \
+            --paths-json "${CHANGED_PATHS_JSON}" \
+            --github-output "$GITHUB_OUTPUT"
+        env:
+          AUTHOR_LOGIN: ${{ steps.parse.outputs.author_login }}
+          PR_BODY_BASE64: ${{ steps.parse.outputs.pr_body_base64 }}
+          CHANGED_PATHS_JSON: ${{ steps.parse.outputs.changed_paths_json }}
+
+      - name: Create GitHub App token for signature comments
+        id: app_token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.QMS_BOT_APP_ID }}
+          private-key: ${{ secrets.QMS_BOT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+
+      - name: Post Git-native signature request on merged PR
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ steps.app_token.outputs.token }}
+          script: |
+            const prNumber = Number.parseInt(process.env.PR_NUMBER, 10);
+            if (!Number.isInteger(prNumber) || prNumber < 1) {
+              core.setFailed('Missing PR_NUMBER workflow output.');
+              return;
+            }
+            const pr = (await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            })).data;
+            // Pharma-QMS: no hosted signing endpoint is used. When the optional
+            // SIGNATURE_UI_BASE_URL variable is unset, signers are directed to the
+            // git-native fallback workflow 2.5 (workflow_dispatch) instead.
+            const signingBaseUrl = (process.env.SIGNATURE_UI_BASE_URL || '').trim().replace(/\/+$/g, '');
+            const useGitNativeFallback = !signingBaseUrl;
+            const gitNativeWorkflowUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/workflows/2.5_signature_git_native_fallback.yml`;
+            const roles = (process.env.ROLES || '')
+              .split(/[;,]/)
+              .map((x) => x.trim())
+              .filter(Boolean);
+            const roleIdSequenceRaw = process.env.SIGNATORY_ROLE_ID_SEQUENCE_JSON;
+            const roleMembersRaw = process.env.ROLE_MEMBERS_BY_ID_JSON;
+            if (!roleIdSequenceRaw || !roleMembersRaw) {
+              core.setFailed(
+                'Missing SIGNATORY_ROLE_ID_SEQUENCE_JSON or ROLE_MEMBERS_BY_ID_JSON env var. Resolver outputs are not threaded — re-run after checking `steps.roles` outputs.'
+              );
+              return;
+            }
+            const roleIdSequence = JSON.parse(roleIdSequenceRaw);
+            if (roleIdSequence.length !== roles.length) {
+              core.setFailed(
+                `Resolver returned ${roleIdSequence.length} role IDs but PR body declared ${roles.length} role(s); cannot pair signers without a 1:1 alignment.`
+              );
+              return;
+            }
+            const roleMembersById = JSON.parse(roleMembersRaw);
+            const approvedSigners = (process.env.APPROVED_SIGNERS_CSV || '')
+              .split(',')
+              .map((x) => x.trim())
+              .filter(Boolean);
+            const buildLink = (slot) => {
+              if (useGitNativeFallback) {
+                return gitNativeWorkflowUrl;
+              }
+              const params = new URLSearchParams({
+                repo: `${context.repo.owner}/${context.repo.repo}`,
+                pr: String(pr.number),
+                signer: slot.signer.toLowerCase(),
+                role: slot.role,
+              });
+              return `${signingBaseUrl}/sign?${params.toString()}`;
+            };
+
+            // Pair each declared role slot to an approved signer who actually
+            // qualifies for that role per the approval matrix — no `roles[i]`
+            // index-mapping and no role fallback. Order-independent coverage via
+            // the shared matcher (the same module the 1.2 merge gate uses). For
+            // human authors `approvedSigners[0]` is the author, who covers at
+            // most one declared role (whichever the reviewers did not); each
+            // remaining role pairs to a distinct qualifying non-author approver.
+            // Automation authors sign nothing (author ineligible) and may
+            // legitimately leave roles unfilled. See .github/scripts/role-coverage.js.
+            const { matchRoleSlots } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/role-coverage.js`);
+            const isAutomationAuthor = String(process.env.AUTHOR_IS_AUTOMATION_BOT || '').toLowerCase() === 'true';
+            const approvedSignersLower = approvedSigners.map((u) => u.toLowerCase());
+
+            const missingMembershipForRoleIds = roleIdSequence.filter((roleId) => !(roleId in roleMembersById));
+            if (missingMembershipForRoleIds.length > 0) {
+              core.setFailed(
+                `Resolver-output drift: role_members map missing entries for ${missingMembershipForRoleIds.join(', ')}. ` +
+                `Re-run after fixing scripts/resolve_signature_policy.py outputs.`
+              );
+              return;
+            }
+
+            const authorKey = isAutomationAuthor ? '' : (approvedSignersLower[0] || '');
+            const approverKeys = isAutomationAuthor ? approvedSignersLower : approvedSignersLower.slice(1);
+            const rrsForMatch = isAutomationAuthor ? roleIdSequence.length : Math.max(0, roleIdSequence.length - 1);
+            const coverage = matchRoleSlots(roleIdSequence, roleMembersById, authorKey, approverKeys, rrsForMatch);
+
+            const usedSigners = new Set();
+            const slotAssignments = [];
+            for (const [slotIdxStr, signer] of Object.entries(coverage.assignment)) {
+              slotAssignments.push({ slotIndex: Number(slotIdxStr), signer });
+              usedSigners.add(signer);
+            }
+            const unfilledRoleIds = coverage.missingRoleIds;
+            if (unfilledRoleIds.length > 0 && !isAutomationAuthor) {
+              core.setFailed(
+                `Cannot pair an approved signer to declared role(s): ${unfilledRoleIds.join(', ')}. ` +
+                `Approved signers: ${approvedSignersLower.join(', ') || '(none)'}. ` +
+                `Check the approval matrix — every declared role needs at least one qualifying approved signer.`
+              );
+              return;
+            }
+
+            slotAssignments.sort((a, b) => a.slotIndex - b.slotIndex);
+            const signerSlots = slotAssignments.map((a, i) => ({
+              signer: a.signer,
+              role: roles[a.slotIndex],
+              signature_index: String(i + 1),
+            }));
+
+            const unpairedSigners = approvedSignersLower.filter((s) => !usedSigners.has(s));
+            if (unpairedSigners.length > 0) {
+              core.warning(
+                `${unpairedSigners.length} approved signer(s) did not qualify for any declared role and were dropped from the signature request: ${unpairedSigners.join(', ')}. ` +
+                `This usually means a reviewer was requested manually rather than via 1.1.`
+              );
+            }
+
+            const runLinks = signerSlots.length > 0
+              ? signerSlots.map((slot) => `- @${slot.signer} (${slot.role}): [Review and sign](${buildLink(slot)})`)
+              : ['- No eligible approved assigned reviewers found.'];
+
+            const coapprovalReasons = (process.env.COAPPROVAL_REASONS || '').trim();
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+            const requestComments = comments
+              .filter((comment) => {
+                const commentBody = String(comment.body || '');
+                return commentBody.includes('<!-- signature-native-signature-request -->') ||
+                  commentBody.includes('<!-- part11-native-signature-request -->');
+              })
+              .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0));
+            const hasAttestation = comments.some((comment) => {
+              const commentBody = String(comment.body || '');
+              return commentBody.includes('<!-- signature-native-attestation -->') ||
+                commentBody.includes('<!-- part11-native-attestation -->');
+            });
+            if (hasAttestation) {
+              core.info(`PR #${prNumber} already has a native attestation comment; skipping request post.`);
+              return;
+            }
+            const requestContext = {
+              version: 1,
+              hash: process.env.TARGET_HASH,
+              hash_scope: 'pr_merge_state',
+              record_type: 'pull_request',
+              meaning: process.env.MEANING,
+              required_signatures: String(process.env.REQUIRED || '1'),
+              signers: signerSlots,
+            };
+            const body = [
+              '<!-- signature-native-signature-request -->',
+              '<!-- SIGNATURE_REQUEST_CONTEXT_V1',
+              JSON.stringify(requestContext, null, 2),
+              '-->',
+              '🛑 Signature required',
+              '',
+              'Please review the merged PR and complete your QMS signature.',
+              '',
+              'What you are approving:',
+              `- The approved merge state for PR #${prNumber}.`,
+              `- Signature meaning: ${process.env.MEANING}.`,
+              coapprovalReasons ? `- Additional matched approval scope: ${coapprovalReasons}.` : '',
+              '',
+              'How to sign:',
+              ...(useGitNativeFallback
+                ? [
+                    '1. Open the link next to your GitHub username below (workflow 2.5 Manual Signature Attestation Fallback).',
+                    `2. Click "Run workflow", enter pr_number ${prNumber} and type your full legal name as your signature assertion.`,
+                    '3. Run the workflow while signed in with that same GitHub account; it posts the signature attestation on this PR.',
+                  ]
+                : [
+                    '1. Open the link next to your GitHub username below.',
+                    '2. Sign in with that same GitHub account.',
+                    '3. Confirm with your QMS PIN.',
+                  ]),
+              '',
+              ...runLinks,
+              '',
+              '<details><summary>Technical details for the QMS record</summary>',
+              '<ul>',
+              `<li>Meaning of signature: <strong>${process.env.MEANING}</strong></li>`,
+              `<li>Required signatures: <strong>${process.env.REQUIRED}</strong></li>`,
+              `<li>Designated signatory role(s): <strong>${roles.join(', ') || process.env.ROLES}</strong></li>`,
+              `<li>Eligible signers: <strong>${approvedSigners.length > 0 ? approvedSigners.map((x) => '@' + x).join(', ') : 'none found'}</strong></li>`,
+              `<li>Target hash (PR merge state): <code>${process.env.TARGET_HASH}</code></li>`,
+              '</ul>',
+              '</details>',
+            ].filter(Boolean).join('\n');
+
+            const latestRequest = requestComments.length > 0 ? requestComments[requestComments.length - 1] : null;
+            if (latestRequest) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: latestRequest.id,
+                body,
+              });
+              core.info(`Updated signature request comment for PR #${prNumber}.`);
+              return;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body,
+            });
+        env:
+          PR_NUMBER: ${{ steps.parse.outputs.pr_number }}
+          MEANING: ${{ steps.roles.outputs.meaning_of_signature }}
+          ROLES: ${{ steps.roles.outputs.signatory_roles }}
+          SIGNATORY_ROLE_ID_SEQUENCE_JSON: ${{ steps.roles.outputs.signatory_role_id_sequence_json }}
+          ROLE_MEMBERS_BY_ID_JSON: ${{ steps.roles.outputs.role_members_lowercased_by_id_json }}
+          AUTHOR_IS_AUTOMATION_BOT: ${{ steps.parse.outputs.author_is_automation_bot }}
+          REQUIRED: ${{ steps.parse.outputs.required_signatures }}
+          TARGET_HASH: ${{ steps.parse.outputs.target_hash }}
+          APPROVED_SIGNERS_CSV: ${{ steps.parse.outputs.approved_signers_csv }}
+          COAPPROVAL_REASONS: ${{ steps.parse.outputs.coapproval_reasons }}
+          SIGNATURE_UI_BASE_URL: ${{ vars.SIGNATURE_UI_BASE_URL }}

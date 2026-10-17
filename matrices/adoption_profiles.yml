@@ -1,0 +1,149 @@
+version: 1
+owner_role: management_representative
+last_reviewed_on: "2026-06-14"
+status: optional_adoption_aid
+
+disclaimer: >-
+  Adoption profiles are OPTIONAL aids for tailoring the source open QMS
+  Baseline to an adopter's operating model. They select and explain which
+  baseline areas, controlled documents, gap analyses, and record families are
+  typically relevant for a given kind of product or use case. Profiles do NOT
+  make any product-specific control mandatory for every adopter, do NOT change
+  the product-independent upstream baseline, and are NOT regulatory advice. Each
+  adopter remains responsible for determining product qualification,
+  classification, applicable regulations, and the controls it must operate, and
+  for keeping its own operational QMS evidence separate from this public
+  baseline.
+
+references:
+  company_profile: matrices/company_profile.yml
+  regulatory_market_scope: matrices/regulatory_market_scope.yml
+  quality_manual_traceability: matrices/quality_manual_traceability.yml
+
+# Pharma-QMS adoption decision (Zeuthen). Only the selected profile is kept below;
+# the other source-baseline profiles (ai_diagnostic, digital_health_app,
+# in_house_clinical_software, clinical_trial_software) were not adopted.
+selected_profile:
+  id: app_with_ai
+  selected_by: Zeuthens
+  selected_on: "TODO: set to the QMS approval date"
+  product_in_scope:
+    name: "IMPD automation"
+    repository: "Zeuthens/impd-automation"
+    licensee_customer: "Egebro Consult"
+  additional_layers:
+    - id: gxp_context
+      gap_analysis: matrices/gamp5_gxp_gap_analysis.yml
+      rationale: >-
+        IMPD automation is used by pharmaceutical customers in GxP-regulated
+        regulatory work, so the GAMP 5 / EU GMP Annex 11 overlay is kept in scope
+        as the GxP context.
+  optional_items_adopted:
+    - SOP-019  # usability engineering, optional good practice
+    - records/usability
+  retained_beyond_profile:
+    # The profile lists only additive SOPs; these source-baseline SOPs are not
+    # listed for app_with_ai but are referenced by the core ISO 9001 gap
+    # analysis (SOP-008, SOP-012, SOP-015) or by the ISO/IEC 42001, ISO/IEC 27001
+    # and GAMP 5 gap analyses (SOP-018), so they are retained.
+    sops: [SOP-008, SOP-012, SOP-015, SOP-018]
+    record_families: [records/design, records/feedback, records/nonconformity, records/risk, records/external]
+  not_applicable:
+    sops:
+      - SOP-007  # medical device file control (device only)
+      - SOP-013  # regulatory incident reporting (device vigilance)
+      - SOP-014  # post-market surveillance (device PMS)
+    gap_analyses:
+      - iso_13485_gap_analysis.yml
+      - iso_14971_gap_analysis.yml
+      - iec_62304_gap_analysis.yml
+      - iec_62366_1_gap_analysis.yml
+      - iec_82304_1_gap_analysis.yml
+    record_families: [records/mdf, records/pms, records/incidents]
+    frameworks:
+      - "Swiss nFADP (no Swiss processing; matrices/swiss_nfadp_gap_analysis.yml kept for reference only)"
+  adopter_must_provide_status:
+    - item: Confirmation that the product makes no medical claim and is out of device scope.
+      status: "TODO: confirm and approve matrices/regulatory_market_scope.yml"
+
+# The core baseline applies to EVERY profile. Profiles only add layers on top of
+# this spine; they never remove a core control.
+core_baseline:
+  description: >-
+    Product-independent QMS spine that every adopter operates regardless of
+    product type. Derived from the SOP sets common to the baseline's core
+    management-system gap analyses, plus the GitHub-native QMS tooling controls.
+  quality_manual: qm/QM-001-QualityManual.md
+  sops:
+    - SOP-001  # Document control
+    - SOP-002  # CAPA
+    - SOP-003  # Internal audit
+    - SOP-004  # Management review
+    - SOP-005  # QMS governance
+    - SOP-006  # Software validation (QMS tooling / computerized systems)
+    - SOP-009  # Change management
+    - SOP-010  # Supplier and purchasing control
+    - SOP-011  # Competence, training and awareness
+    - SOP-016  # Quality metrics and data analysis
+    - SOP-017  # Infrastructure and maintenance control
+    - SOP-020  # Software lifecycle, configuration and release management
+  gap_analyses:
+    - matrices/iso_9001_gap_analysis.yml
+  record_families:
+    - records/audits
+    - records/capas
+    - records/change
+    - records/configuration
+    - records/management-reviews
+    - records/releases
+    - records/suppliers
+    - records/training
+    - records/validation
+    - records/verification_validation
+  qms_intent_standards:
+    - "ISO 9001:2015 (incl. Amd 1:2024)"
+
+profiles:
+  - id: app_with_ai
+    name: "App with AI (non-device software product with AI features)"
+    baseline_coverage: full
+    intended_for: >-
+      A general software product that embeds AI/ML features but has no medical
+      purpose and does not qualify as a medical device. Distinguishing layer is
+      AI management plus security and privacy.
+    not_for:
+      - Software intended for a medical purpose (see ai_diagnostic).
+      - Products making any diagnostic, therapeutic, or clinical claim.
+    adds_sops:
+      - SOP-019  # Usability engineering (optional good practice)
+      - SOP-021  # Information security management
+      - SOP-022  # AI management system
+      - SOP-023  # Data protection and privacy management
+    gap_analyses:
+      - matrices/iso_iec_42001_gap_analysis.yml
+      - matrices/iso_27001_gap_analysis.yml
+      - matrices/gdpr_gap_analysis.yml
+      - matrices/swiss_nfadp_gap_analysis.yml
+      - matrices/privacy_data_protection_gap_index.yml
+    record_families:
+      - records/aims
+      - records/isms
+      - records/privacy
+      - records/usability  # optional
+    qms_intent_standards:
+      - "ISO 9001:2015 (incl. Amd 1:2024)"
+      - "ISO/IEC 42001:2023"
+      - "ISO/IEC 27001:2022 (incl. Amd 1:2024)"
+      - "GDPR / Swiss nFADP (where personal data is processed)"  # Zeuthen: GDPR only
+    boundary: >-
+      Explicitly NOT a medical device: the ISO 13485 / IEC 62304 / IEC 62366-1
+      medical-device controls and the medical device file are out of scope
+      unless the product later acquires a medical purpose.
+    escalation:
+      - to: ai_diagnostic
+        when: >-
+          AI output is used for a medical purpose or the product makes a
+          diagnostic/therapeutic claim; the product then qualifies as SaMD.
+    adopter_must_provide:
+      - Confirmation that the product makes no medical claim and is out of device scope.
+
